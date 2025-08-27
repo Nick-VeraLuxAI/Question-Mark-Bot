@@ -9,43 +9,43 @@ datasource db {
 }
 
 model Tenant {
-  id        String           @id @default(cuid())
+  id        String         @id @default(cuid())
   name      String
-  apiKey    String           @unique
-  plan      String           @default("basic")
+  apiKey    String         @unique
+  plan      String         @default("basic")
   convos    Conversation[]
   leads     Lead[]
   events    Event[]
   usage     Usage[]
   metrics   Metric[]
-  logs      ConversationLog[]
-  createdAt DateTime         @default(now())
+  convLogs  ConversationLog[]  // snapshots
+  createdAt DateTime       @default(now())
 }
 
 model Conversation {
-  id        String       @id @default(cuid())
+  id        String   @id @default(cuid())
   tenantId  String
   sessionId String
-  startedAt DateTime     @default(now())
+  startedAt DateTime @default(now())
   endedAt   DateTime?
   messages  Message[]
 
-  tenant    Tenant       @relation(fields: [tenantId], references: [id])
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
 
   @@unique([tenantId, sessionId])
   @@index([tenantId])
 }
 
 model Message {
-  id             String        @id @default(cuid())
+  id             String   @id @default(cuid())
   conversationId String
-  role           String        // "user" | "assistant" | "system"
+  role           String   // "user" | "assistant" | "system"
   content        String
-  tokensIn       Int           @default(0)
-  tokensOut      Int           @default(0)
-  createdAt      DateTime      @default(now())
+  tokensIn       Int      @default(0)
+  tokensOut      Int      @default(0)
+  createdAt      DateTime @default(now())
 
-  conversation   Conversation  @relation(fields: [conversationId], references: [id])
+  conversation   Conversation @relation(fields: [conversationId], references: [id])
 
   @@index([conversationId])
 }
@@ -105,10 +105,9 @@ model ConversationLog {
   tenantId  String
   sessionId String
   at        DateTime @default(now())
-  data      Json     // snapshot of conversation, lead, tags, etc.
+  data      Json     // store snapshot of conversation payload
 
   tenant    Tenant   @relation(fields: [tenantId], references: [id])
-
   @@index([tenantId])
-  @@index([sessionId])
 }
+
