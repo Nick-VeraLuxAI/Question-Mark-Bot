@@ -77,18 +77,21 @@ async function logMetric(type, value) {
 
 async function logConversation(sessionId, data) {
   await safePost("/api/portal/log-conversation", `&sessionId=${sessionId}`, data);
+
   try {
-    await prisma.event.create({
+    await prisma.conversationLog.create({
       data: {
         tenantId: TENANT,
-        type: "conversation",
-        content: JSON.stringify({ sessionId, ...data }),
+        sessionId,
+        at: new Date(),
+        data,
       },
     });
   } catch (err) {
     console.error("DB logConversation failed:", err.message);
   }
 }
+
 
 async function logLead({ name, email, phone, snippet = "", tags = [] }) {
   // 1) metric for admin panel
