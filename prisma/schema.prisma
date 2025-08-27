@@ -1,0 +1,45 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider          = "postgresql"
+  url               = env("DATABASE_URL")
+  shadowDatabaseUrl = env("SHADOW_DATABASE_URL")
+}
+
+
+model Tenant {
+  id        String         @id @default(cuid())
+  name      String
+  apiKey    String         @unique
+  plan      String         @default("basic")
+  convos    Conversation[]
+  createdAt DateTime       @default(now())
+}
+
+model Conversation {
+  id        String   @id @default(cuid())
+  tenantId  String
+  sessionId String
+  startedAt DateTime @default(now())
+  endedAt   DateTime?
+  messages  Message[]
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, sessionId])
+  @@index([tenantId])
+}
+
+model Message {
+  id             String   @id @default(cuid())
+  conversationId String
+  role           String   // "user" | "assistant" | "system"
+  content        String
+  tokensIn       Int      @default(0)
+  tokensOut      Int      @default(0)
+  createdAt      DateTime @default(now())
+  conversation   Conversation @relation(fields: [conversationId], references: [id])
+
+  @@index([conversationId])
+}
