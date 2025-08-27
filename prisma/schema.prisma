@@ -8,13 +8,16 @@ datasource db {
   shadowDatabaseUrl = env("SHADOW_DATABASE_URL")
 }
 
-
 model Tenant {
   id        String         @id @default(cuid())
   name      String
   apiKey    String         @unique
   plan      String         @default("basic")
   convos    Conversation[]
+  leads     Lead[]
+  events    Event[]
+  usage     Usage[]
+  metrics   Metric[]
   createdAt DateTime       @default(now())
 }
 
@@ -25,6 +28,7 @@ model Conversation {
   startedAt DateTime @default(now())
   endedAt   DateTime?
   messages  Message[]
+
   tenant    Tenant   @relation(fields: [tenantId], references: [id])
 
   @@unique([tenantId, sessionId])
@@ -39,7 +43,59 @@ model Message {
   tokensIn       Int      @default(0)
   tokensOut      Int      @default(0)
   createdAt      DateTime @default(now())
+
   conversation   Conversation @relation(fields: [conversationId], references: [id])
 
   @@index([conversationId])
 }
+
+model Lead {
+  id        String   @id @default(cuid())
+  tenantId  String
+  name      String
+  email     String
+  phone     String
+  snippet   String
+  tags      String[]   // saves extractTags() output
+  createdAt DateTime @default(now())
+
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  @@index([tenantId])
+}
+
+model Event {
+  id        String   @id @default(cuid())
+  tenantId  String
+  type      String   // "user" | "server" | "ai" etc.
+  content   String
+  createdAt DateTime @default(now())
+
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  @@index([tenantId])
+}
+
+model Usage {
+  id              String   @id @default(cuid())
+  tenantId        String
+  model           String
+  promptTokens    Int
+  completionTokens Int
+  cachedTokens    Int
+  cost            Float
+  createdAt       DateTime @default(now())
+
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  @@index([tenantId])
+}
+
+model Metric {
+  id        String   @id @default(cuid())
+  tenantId  String
+  name      String   // e.g. "latency"
+  value     Float
+  createdAt DateTime @default(now())
+
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  @@index([tenantId])
+}
+
