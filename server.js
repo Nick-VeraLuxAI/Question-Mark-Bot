@@ -129,13 +129,28 @@ app.use(async (req, res, next) => {
     const sessionId = ensureSid(req, res);
     const userText = (req.body?.message || req.body?.content || req.body?.text || req.body?.prompt || '').toString().trim();
     if (!userText) return next();
+    
+    
 
-    // upsert conversation
+    // make sure tenant exists (self-healing)
+    await prisma.tenant.upsert({
+      where: { id: tenantId },
+      update: {},
+      create: {
+        id: tenantId,
+        name: tenantId,
+        apiKey: `key_${tenantId}`,   // stub key, can replace later
+        plan: 'basic'
+      }
+    });
+
+    // now safe to upsert conversation
     const convo = await prisma.conversation.upsert({
       where: { tenantId_sessionId: { tenantId, sessionId } },
       update: {},
       create: { tenantId, sessionId }
     });
+
 
     // save user turn
     await prisma.message.create({ data: { conversationId: convo.id, role: 'user', content: userText } });
