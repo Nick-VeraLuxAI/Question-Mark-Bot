@@ -6,6 +6,8 @@ const path = require('path');
 const nodemailer = require('nodemailer');
 const OpenAI = require('openai');
 const { google } = require('googleapis');
+const cookieParser = require('cookie-parser');
+
 const cors = require('cors');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 console.log("ENV.TENANT =", process.env.TENANT);
@@ -101,6 +103,64 @@ app.set("trust proxy", 1);   // needed on Render/Railway/Heroku for correct IP/p
 app.use(cors());
 app.use(express.json()); // same behavior for JSON bodies
 app.use(express.static(path.join(__dirname, 'public')));
+
+// --- Session persistence (tenant_id + session_id) ---
+app.use(cookieParser());
+
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
+
+const { randomUUID } = require('crypto');
+function ensureSid(req, res) {
+  let sid = req.cookies?.sid;
+  if (!sid) {
+    sid = randomUUID();
+    res.cookie('sid', sid, { httpOnly: true, sameSite: 'Lax', maxAge: 1000*60*60*24*30 });
+  }
+  return sid;
+}
+
+// Middleware to log user message before /message handler and assistant reply after
+app.use(async (req, res, next) => {
+  if (req.method !== 'POST' || req.path !== '/message') return next();
+
+  try {
+    const tenantId = (req.headers['x-tenant-id'] || req.headers['x-tenant'] || process.env.TENANT || 'default').toString();
+    const sessionId = ensureSid(req, res);
+    const userText = (req.body?.message || req.body?.content || req.body?.text || req.body?.prompt || '').toString().trim();
+    if (!userText) return next();
+
+    // upsert conversation
+    const convo = await prisma.conversation.upsert({
+      where: { tenantId_sessionId: { tenantId, sessionId } },
+      update: {},
+      create: { tenantId, sessionId }
+    });
+
+    // save user turn
+    await prisma.message.create({ data: { conversationId: convo.id, role: 'user', content: userText } });
+
+    // hook res.json to save assistant reply after your handler responds
+    const origJson = res.json.bind(res);
+    res.json = async (body) => {
+      try {
+        const replyText = (body && (body.reply || body.message || body.content || body.text))?.toString();
+        if (replyText) {
+          await prisma.message.create({ data: { conversationId: convo.id, role: 'assistant', content: replyText } });
+        }
+      } catch (e) {
+        console.error('post-reply save failed', e);
+      }
+      return origJson(body);
+    };
+
+    next();
+  } catch (e) {
+    console.error('pre-route persistence failed', e);
+    next(); // don't block your bot
+  }
+});
+
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -424,3 +484,4 @@ const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`✅ Solomon backend running on port ${PORT}`);
 });
+
