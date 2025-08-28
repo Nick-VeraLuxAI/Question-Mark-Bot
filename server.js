@@ -473,15 +473,16 @@ app.get('/login', (req, res) => {
 // add near your other routes
 app.get("/env.css", (req, res) => {
   res.set("Content-Type", "text/css; charset=utf-8");
-  res.set("Cache-Control", "no-store"); // <-- important
+  res.set("Cache-Control", "no-store"); // no caching
+
   res.send(`
     :root{
       --brand:#${(process.env.BRAND_COLOR || "B91B21").replace(/^#/, "")};
       --brandHover:#${(process.env.BRAND_HOVER || "99171b").replace(/^#/, "")};
-      --botBg:${process.env.BOT_BG || "#fce7e7"};
-      --botText:${process.env.BOT_TEXT || "var(--brand)"};
-      --userBg:${process.env.USER_BG || "#eee"};
-      --userText:${process.env.USER_TEXT || "#333"};
+      --botBg:#${(process.env.BOT_BG || "fce7e7").replace(/^#/, "")};
+      --botText:#${(process.env.BOT_TEXT || "333333").replace(/^#/, "")};
+      --userBg:#${(process.env.USER_BG || "eeeeee").replace(/^#/, "")};
+      --userText:#${(process.env.USER_TEXT || "333333").replace(/^#/, "")};
       --glassBg:${process.env.GLASS_BG || "rgba(255,255,255,0.25)"};
       --glassTop:${process.env.GLASS_TOP || "rgba(255,255,255,0.1)"};
       --blur:${process.env.BLUR_PX || "14px"};
