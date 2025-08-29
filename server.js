@@ -146,24 +146,30 @@ app.use(async (req, res, next) => {
   if (req.method !== 'POST' || req.path !== '/message') return next();
 
   try {
-    const tenantId = (req.headers['x-tenant-id'] || req.headers['x-tenant'] || process.env.TENANT || 'default').toString();
-    const sessionId = ensureSid(req, res);
-    const userText = (req.body?.message || req.body?.content || req.body?.text || req.body?.prompt || '').toString().trim();
-    if (!userText) return next();
-    
-    
+// Resolve tenant by header/query/env/subdomain → DB row
+const tenantSlug = resolveTenantSlug(req);
 
-    // make sure tenant exists (self-healing)
-    await prisma.tenant.upsert({
-      where: { id: tenantId },
-      update: {},
-      create: {
-        id: tenantId,
-        name: tenantId,
-        apiKey: `key_${tenantId}`,   // stub key, can replace later
-        plan: 'basic'
-      }
-    });
+const tenantRow = await prisma.tenant.findFirst({
+  where: {
+    OR: [
+      { subdomain: tenantSlug },                              // preferred: subdomain
+      { id: tenantSlug },                                     // legacy fallback
+      { name: { equals: tenantSlug, mode: 'insensitive' } }   // legacy fallback
+    ]
+  },
+  select: { id: true }
+});
+
+if (!tenantRow) {
+  console.warn('tenant_not_found', { tenantSlug });
+  // If you want strict isolation, uncomment the next line:
+  // return res.status(404).json({ error: 'tenant_not_found', tenant: tenantSlug });
+}
+
+const tenantId = tenantRow ? tenantRow.id : tenantSlug;   // used below
+const sessionId = ensureSid(req, res);
+const userText = (req.body?.message || req.body?.content || req.body?.text || req.body?.prompt || '').toString().trim();
+if (!userText) return next();
 
     // now safe to upsert conversation
     const convo = await prisma.conversation.upsert({
@@ -372,7 +378,7 @@ try {
   console.log("🧠 Sending to OpenAI:", message);
 
   // Resolve tenant (HEADER → QUERY → ENV → SUBDOMAIN → DEFAULT)
-  const tenant = getTenant(req);
+  const tenant = resolveTenantSlug(req);
 
   // Load prompts
   const { system, policy, voice } = await loadPrompts(tenant);
