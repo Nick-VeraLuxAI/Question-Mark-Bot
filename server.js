@@ -146,30 +146,30 @@ app.use(async (req, res, next) => {
   if (req.method !== 'POST' || req.path !== '/message') return next();
 
   try {
-// Resolve tenant by header/query/env/subdomain → DB row
-const tenantSlug = resolveTenantSlug(req);
+    // Resolve tenant by header/query/env/subdomain → DB row
+    const tenantSlug = resolveTenantSlug(req);
 
-const tenantRow = await prisma.tenant.findFirst({
-  where: {
-    OR: [
-      { subdomain: tenantSlug },                              // preferred: subdomain
-      { id: tenantSlug },                                     // legacy fallback
-      { name: { equals: tenantSlug, mode: 'insensitive' } }   // legacy fallback
-    ]
-  },
-  select: { id: true }
-});
+    const tenantRow = await prisma.tenant.findFirst({
+      where: {
+        OR: [
+          { subdomain: tenantSlug },                              // preferred: subdomain
+          { id: tenantSlug },                                     // legacy fallback
+          { name: { equals: tenantSlug, mode: 'insensitive' } }   // legacy fallback
+        ]
+      },
+      select: { id: true }
+    });
 
-if (!tenantRow) {
-  console.warn('tenant_not_found', { tenantSlug });
-  // If you want strict isolation, uncomment the next line:
-  // return res.status(404).json({ error: 'tenant_not_found', tenant: tenantSlug });
-}
+    if (!tenantRow) {
+      console.warn('tenant_not_found', { tenantSlug });
+      // Strict mode: uncomment to block unknown tenants
+      // return res.status(404).json({ error: 'tenant_not_found', tenant: tenantSlug });
+    }
 
-const tenantId = tenantRow ? tenantRow.id : tenantSlug;   // used below
-const sessionId = ensureSid(req, res);
-const userText = (req.body?.message || req.body?.content || req.body?.text || req.body?.prompt || '').toString().trim();
-if (!userText) return next();
+    const tenantId = tenantRow ? tenantRow.id : tenantSlug;
+    const sessionId = ensureSid(req, res);
+    const userText = (req.body?.message || req.body?.content || req.body?.text || req.body?.prompt || '').toString().trim();
+    if (!userText) return next();
 
     // now safe to upsert conversation
     const convo = await prisma.conversation.upsert({
@@ -177,7 +177,6 @@ if (!userText) return next();
       update: {},
       create: { tenantId, sessionId }
     });
-
 
     // save user turn
     await prisma.message.create({ data: { conversationId: convo.id, role: 'user', content: userText } });
@@ -199,7 +198,7 @@ if (!userText) return next();
     next();
   } catch (e) {
     console.error('pre-route persistence failed', e);
-    next(); // don't block your bot
+    next(); // don’t block your bot
   }
 });
 
@@ -372,13 +371,13 @@ if ((source === "contact" || (emailMatch && phoneMatch && nameLikely))) {
   });
 }
 
-
 // ------------- Normal AI response flow -------------
 try {
   console.log("🧠 Sending to OpenAI:", message);
 
   // Resolve tenant (HEADER → QUERY → ENV → SUBDOMAIN → DEFAULT)
   const tenant = resolveTenantSlug(req);
+
 
   // Load prompts
   const { system, policy, voice } = await loadPrompts(tenant);
