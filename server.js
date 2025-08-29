@@ -228,15 +228,32 @@ function similar(a, b) {
 }
 
 const TAG_DICT = {
-  flooring:    ["flooring","epoxy","polyaspartic","flake","flakes","chips","coat","coating","resin","mvr"],
-  cabinets:    ["cabinet","cabinets","storage","slatwall","slat wall","shelves","shelving","overhead","rack","racks"],
-  lighting:    ["lighting","light","lights","led","fixture","fixtures"],
-  electrical:  ["electrical","outlet","outlets","120v","240v","220v","subpanel","breaker","ev charger","charger"],
-  insulation:  ["insulation","insulate","spray foam","foam","r-value"],
-  doors:       ["garage door","overhead door","roll up","opener","openers","belt drive"],
-  budget:      ["budget","price","pricing","cost","estimate","quote","range","ballpark"],
-  consultation:["consultation","schedule","appointment","meeting","site visit","quote request","come out"]
+  // Design & Aesthetic
+  design:       ["design","designer","layout","plan","plans","concept","ideas","inspiration","rendering"],
+  style:        ["style","modern","contemporary","traditional","luxury","timeless","aesthetic","look","feel"],
+  finishes:     ["finish","finishes","materials","stone","marble","tile","wood","hardware","countertop","backsplash"],
+
+  // Spaces / Renovation Areas
+  kitchen:      ["kitchen","island","cabinets","countertops","appliances","pantry"],
+  bathroom:     ["bathroom","shower","tub","vanity","toilet","powder room"],
+  living:       ["living room","family room","fireplace","built-in","shelving"],
+  bedroom:      ["bedroom","master","closet","wardrobe"],
+  exterior:     ["exterior","patio","deck","outdoor","landscape","facade"],
+  addition:     ["addition","remodel","renovation","expansion","new build","construction"],
+
+  // Services / Technical
+  lighting:     ["lighting","light","fixture","fixtures","led","recessed","sconce","chandelier"],
+  electrical:   ["electrical","outlet","outlets","wiring","subpanel","breaker","ev charger"],
+  plumbing:     ["plumbing","sink","faucet","pipe","pipes","water","drain"],
+  insulation:   ["insulation","insulate","spray foam","r-value"],
+
+  // Client Intent
+  budget:       ["budget","price","pricing","cost","estimate","quote","range","ballpark"],
+  timeline:     ["timeline","schedule","timeframe","how long","when","availability"],
+  consultation: ["consultation","schedule","appointment","meeting","site visit","request","come out"],
+  inspiration:  ["idea","dream","vision","want","looking for","inspire","goal"]
 };
+
 
 function extractTags(message) {
   const text = normalize(message);
