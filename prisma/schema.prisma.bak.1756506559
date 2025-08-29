@@ -9,43 +9,42 @@ datasource db {
 }
 
 model Tenant {
-  id        String            @id @default(cuid())
+  id        String         @id @default(cuid())
   name      String
-  apiKey    String            @unique
-  plan      String            @default("basic")
-  createdAt DateTime          @default(now())
-  subdomain String?           @unique
-  branding  Json?             @default("{}")
-  settings  Json?             @default("{}")
+  apiKey    String         @unique
+  plan      String         @default("basic")
   convos    Conversation[]
-  convLogs  ConversationLog[]
-  events    Event[]
   leads     Lead[]
-  metrics   Metric[]
+  events    Event[]
   usage     Usage[]
+  metrics   Metric[]
+  convLogs  ConversationLog[]  // snapshots
+  createdAt DateTime       @default(now())
 }
 
 model Conversation {
-  id        String    @id @default(cuid())
+  id        String   @id @default(cuid())
   tenantId  String
   sessionId String
-  startedAt DateTime  @default(now())
+  startedAt DateTime @default(now())
   endedAt   DateTime?
-  tenant    Tenant    @relation(fields: [tenantId], references: [id])
   messages  Message[]
+
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
 
   @@unique([tenantId, sessionId])
   @@index([tenantId])
 }
 
 model Message {
-  id             String       @id @default(cuid())
+  id             String   @id @default(cuid())
   conversationId String
-  role           String
+  role           String   // "user" | "assistant" | "system"
   content        String
-  tokensIn       Int          @default(0)
-  tokensOut      Int          @default(0)
-  createdAt      DateTime     @default(now())
+  tokensIn       Int      @default(0)
+  tokensOut      Int      @default(0)
+  createdAt      DateTime @default(now())
+
   conversation   Conversation @relation(fields: [conversationId], references: [id])
 
   @@index([conversationId])
@@ -58,21 +57,21 @@ model Lead {
   email     String
   phone     String
   snippet   String
-  tags      String[]
+  tags      String[]   // saves extractTags() output
   createdAt DateTime @default(now())
-  tenant    Tenant   @relation(fields: [tenantId], references: [id])
 
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
   @@index([tenantId])
 }
 
 model Event {
   id        String   @id @default(cuid())
   tenantId  String
-  type      String
+  type      String   // "user" | "server" | "ai" etc.
   content   String
   createdAt DateTime @default(now())
-  tenant    Tenant   @relation(fields: [tenantId], references: [id])
 
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
   @@index([tenantId])
 }
 
@@ -85,19 +84,19 @@ model Usage {
   cachedTokens     Int
   cost             Float
   createdAt        DateTime @default(now())
-  tenant           Tenant   @relation(fields: [tenantId], references: [id])
 
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
   @@index([tenantId])
 }
 
 model Metric {
   id        String   @id @default(cuid())
   tenantId  String
-  name      String
+  name      String   // e.g. "latency"
   value     Float
   createdAt DateTime @default(now())
-  tenant    Tenant   @relation(fields: [tenantId], references: [id])
 
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
   @@index([tenantId])
 }
 
@@ -106,8 +105,9 @@ model ConversationLog {
   tenantId  String
   sessionId String
   at        DateTime @default(now())
-  data      Json
-  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  data      Json     // store snapshot of conversation payload
 
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
   @@index([tenantId])
 }
+

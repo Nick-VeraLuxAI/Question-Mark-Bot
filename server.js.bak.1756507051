@@ -41,27 +41,6 @@ function getTenant(req) {
   return DEFAULT_TENANT;
 }
 
-// ✅ New subdomain-aware resolver (place it here, before readFileCached)
-function resolveTenantSlug(req) {
-  const sanitize = s => String(s||"").toLowerCase().replace(/[^a-z0-9_-]/g,"");
-
-  const fromHeader = sanitize(req.headers["x-tenant"]);
-  if (fromHeader) return fromHeader;
-
-  const fromQuery = sanitize(req.query.tenant);
-  if (fromQuery) return fromQuery;
-
-  const fromEnv = sanitize(process.env.TENANT);
-  if (fromEnv) return fromEnv;
-
-  const host = String(req.hostname||"").toLowerCase();
-  const sub = host.split(".")[0];
-  if (sub && !["www","localhost","127.0.0.1","::1","admin"].includes(sub)) {
-    return sanitize(sub);
-  }
-
-  return (process.env.DEFAULT_TENANT || "default").toLowerCase();
-}
 
 async function readFileCached(p) {
   if (!HOT && cache.has(p)) return cache.get(p);
