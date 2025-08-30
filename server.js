@@ -314,164 +314,157 @@ app.post('/message', async (req, res) => {
 
   console.log("📨 Received message:", message);
   if (source) console.log("📍 Source:", source);
-  await logEvent("user", message);
 
-// Simple lead capture detection
-const emailMatch = message.match(/[\w.-]+@[\w.-]+\.[A-Za-z]{2,}/);
-const phoneMatch = message.match(/\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/);
-
-// Improved regex: allows multi-word names ("Nick De Santis", "Mary Ann Smith")
-const nameRegex = /\b([A-Z][a-z]+(?:\s[A-Z][a-z]+)+)\b/;
-const nameLikely = nameRegex.test(message);
-
-console.log('leadCheck', { source, nameLikely, email: !!emailMatch, phone: !!phoneMatch });
-
-if ((source === "contact" || (emailMatch && phoneMatch && nameLikely))) {
-  const nameMatch = message.match(nameRegex);
-  const name = nameMatch ? nameMatch[0] : "N/A";
-  const email = emailMatch[0];
-  const phone = phoneMatch[0];
-
-  const tags = extractTags(message);
-  console.log('leadTags', tags);
-
-  // 🔸 Log to admin first so Premium shows it even if email fails
-  try {
-    await logLead({ name, email, phone, snippet: message, tags });
-  } catch (e) {
-    console.error("Failed to log lead to admin:", e.message);
-    // keep going; don't block the user response
-  }
-
-  const mailOptions = {
-    from: process.env.LEAD_EMAIL_USER,
-    to: process.env.LEAD_EMAIL_TO,
-    subject: '📥 New Consultation Request',
-    text:
-      "New Lead Captured:\n\n" +
-      `Name: ${name}\nEmail: ${email}\nPhone: ${phone}\n` +
-      `Tags: ${tags.join(', ')}\n\n` +
-      `Original Message: ${message}`
-  };
-
-  transporter.sendMail(mailOptions, async (error, info) => {
-    if (error) {
-      console.error("❌ Email failed to send:", error);
-      await logError("Email", `Email failed: ${error.message}`);
-    } else {
-      console.log("✅ Contact info sent via email:", info.response);
-      await logEvent("server", `Captured new lead: ${name}, ${email}, ${phone}`);
-      await logEvent("ai", "AI replied with: consultation confirmation");
-      // no extra metric call; logLead already posted metric + conversation
-    }
-  });
-
-  return res.json({
-    reply: "Thanks, I've submitted your information to our team! We'll reach out shortly to schedule your consultation."
-  });
-}
-
-// ------------- Normal AI response flow -------------
-try {
-  console.log("🧠 Sending to OpenAI:", message);
-
-  // Resolve tenant (HEADER → QUERY → ENV → SUBDOMAIN → DEFAULT)
+  // resolve once and reuse
   const tenant = resolveTenantSlug(req);
+  const sessionId = req.cookies?.sid || ensureSid(req, res);
 
+  await logEvent("user", message, tenant);
 
-  // Load prompts
-  const { system, policy, voice } = await loadPrompts(tenant);
+  // -------- Lead capture detection --------
+  const emailMatch = message.match(/[\w.-]+@[\w.-]+\.[A-Za-z]{2,}/);
+  const phoneMatch = message.match(/\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/);
+  const nameRegex = /\b([A-Z][a-z]+(?:\s[A-Z][a-z]+)+)\b/;
+  const nameLikely = nameRegex.test(message);
 
-  // 🔍 Debug: show source filepaths + sizes
-  const sysPathTenant = path.join(PROMPTS_DIR, tenant, "systemprompt.md");
-  const polPathTenant = path.join(PROMPTS_DIR, tenant, "policy.md");
-  const voiPathTenant = path.join(PROMPTS_DIR, tenant, "voice.md");
-  const sysPathDefault = path.join(PROMPTS_DIR, DEFAULT_TENANT, "systemprompt.md");
-  const polPathDefault = path.join(PROMPTS_DIR, DEFAULT_TENANT, "policy.md");
-  const voiPathDefault = path.join(PROMPTS_DIR, DEFAULT_TENANT, "voice.md");
+  console.log('leadCheck', { source, nameLikely, email: !!emailMatch, phone: !!phoneMatch });
 
-  console.log("🧩 Prompts loaded:", {
-    tenant,
-    system: system
-      ? { source: path.resolve(sysPathTenant), length: system.length }
-      : { source: path.resolve(sysPathDefault), note: "FALLBACK", length: (system || "").length },
-    policy: policy
-      ? { source: path.resolve(polPathTenant), length: policy.length }
-      : { source: path.resolve(polPathDefault), note: "FALLBACK", length: (policy || "").length },
-    voice: voice
-      ? { source: path.resolve(voiPathTenant), length: voice.length }
-      : { source: path.resolve(voiPathDefault), note: "FALLBACK", length: (voice || "").length },
-  });
+  if ((source === "contact" || (emailMatch && phoneMatch && nameLikely))) {
+    const nameMatch = message.match(nameRegex);
+    const name = nameMatch ? nameMatch[0] : "N/A";
+    const email = emailMatch[0];
+    const phone = phoneMatch[0];
 
-  // Fallback system rules if file missing/empty
-  const basePolicy =
-    (system && system.trim()) ||
-    "You are Solomon, the professional AI assistant for Elevated Garage.\n\n" +
-    "✅ Answer garage-related questions about materials like flooring, cabinetry, lighting, and more.\n" +
-    "✅ Only provide **average material costs** when discussing pricing.\n" +
-    "✅ Clearly state: \"This is for material cost only.\"\n" +
-    "✅ Include this disclaimer: \"This is not a quote — material prices may vary depending on brand, availability, and local suppliers.\"\n\n" +
-    "🚫 Never include labor, install, or total pricing.\n" +
-    "🚫 Never apply markup.\n\n" +
-    "✅ If a user shows interest in starting a project, ask:\n" +
-    "\"Would you like to schedule a consultation to explore your options further?\"\n\n" +
-    "Only collect contact info if the user replies with name, email, and phone in one message.";
+    const tags = extractTags(message);
+    console.log('leadTags', tags);
 
-  // Assemble messages: system → policy → voice → user
-  const messages = [
-    { role: "system", content: basePolicy },
-    ...(policy ? [{ role: "system", content: `Tenant Policy (${tenant}):\n${policy}` }] : []),
-    ...(voice  ? [{ role: "system", content: `Voice & Style Guide (${tenant}):\n${voice}` }] : []),
-    { role: "user", content: message }
-  ];
+    // Log to admin + DB
+    try {
+      await logLead({ name, email, phone, snippet: message, tags }, tenant);
+    } catch (e) {
+      console.error("Failed to log lead to admin:", e.message);
+    }
 
-  const start = Date.now();
-  const aiResponse = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
-    messages
-  });
-  const latency = Date.now() - start;
-  await logMetric("latency", latency, tenant || "unknown");
+    const mailOptions = {
+      from: process.env.LEAD_EMAIL_USER,
+      to: process.env.LEAD_EMAIL_TO,
+      subject: '📥 New Consultation Request',
+      text:
+        "New Lead Captured:\n\n" +
+        `Name: ${name}\nEmail: ${email}\nPhone: ${phone}\n` +
+        `Tags: ${tags.join(', ')}\n\n` +
+        `Original Message: ${message}`
+    };
 
-  let costs = null;
-  if (aiResponse.usage) {
-    const { prompt_tokens, completion_tokens, cached_tokens = 0 } = aiResponse.usage;
-    costs = calculateCost(aiResponse.model || "gpt-4o-mini", prompt_tokens, completion_tokens, cached_tokens);
-    await logUsage({
-      model: aiResponse.model || "gpt-4o-mini",
-      prompt_tokens,
-      completion_tokens,
-      cached_tokens,
-      user: tenant || "unknown",
-      cost: costs.total,
-      breakdown: costs
+    transporter.sendMail(mailOptions, async (error, info) => {
+      if (error) {
+        console.error("❌ Email failed to send:", error);
+        await logError("Email", `Email failed: ${error.message}`, tenant);
+      } else {
+        console.log("✅ Contact info sent via email:", info.response);
+        await logEvent("server", `Captured new lead: ${name}, ${email}, ${phone}`, tenant);
+        await logEvent("ai", "AI replied with: consultation confirmation", tenant);
+      }
+    });
+
+    return res.json({
+      reply: "Thanks, I've submitted your information to our team! We'll reach out shortly to schedule your consultation."
     });
   }
 
-  const reply =
-    aiResponse.choices?.[0]?.message?.content ||
-    "✅ Solomon received your message but didn’t return a clear reply. Please try rephrasing.";
+  // -------- Normal AI response flow --------
+  try {
+    console.log("🧠 Sending to OpenAI:", message);
 
-  await logEvent("ai", reply);
-  await logConversation(Date.now().toString(), {
-    tenant,
-    userMessage: message,
-    aiReply: reply,
-    tokens: aiResponse.usage || {},
-    cost: costs?.total || 0
-  });
+    // Load prompts using the same tenant
+    const { system, policy, voice } = await loadPrompts(tenant);
 
-  res.json({ reply });
+    const sysPathTenant = path.join(PROMPTS_DIR, tenant, "systemprompt.md");
+    const polPathTenant = path.join(PROMPTS_DIR, tenant, "policy.md");
+    const voiPathTenant = path.join(PROMPTS_DIR, tenant, "voice.md");
+    const sysPathDefault = path.join(PROMPTS_DIR, DEFAULT_TENANT, "systemprompt.md");
+    const polPathDefault = path.join(PROMPTS_DIR, DEFAULT_TENANT, "policy.md");
+    const voiPathDefault = path.join(PROMPTS_DIR, DEFAULT_TENANT, "voice.md");
 
-} catch (err) {
-  console.error("❌ OpenAI Error:", err.message);
-  const category = err.message.includes("ENOTFOUND") ? "Network"
-                  : err.message.includes("OpenAI")    ? "OpenAI"
-                  : err.message.includes("SMTP")      ? "Email" : "Server";
-  await logError(category, err.message);
-  res.status(500).json({ reply: "⚠️ Sorry, Solomon had trouble processing your request. Please try again shortly." });
-}
+    console.log("🧩 Prompts loaded:", {
+      tenant,
+      system: system
+        ? { source: path.resolve(sysPathTenant), length: system.length }
+        : { source: path.resolve(sysPathDefault), note: "FALLBACK", length: (system || "").length },
+      policy: policy
+        ? { source: path.resolve(polPathTenant), length: policy.length }
+        : { source: path.resolve(polPathDefault), note: "FALLBACK", length: (policy || "").length },
+      voice: voice
+        ? { source: path.resolve(voiPathTenant), length: voice.length }
+        : { source: path.resolve(voiPathDefault), note: "FALLBACK", length: (voice || "").length },
+    });
 
+    const basePolicy =
+      (system && system.trim()) ||
+      "You are Solomon, the professional AI assistant for Elevated Garage.\n\n" +
+      "✅ Answer garage-related questions about materials like flooring, cabinetry, lighting, and more.\n" +
+      "✅ Only provide **average material costs** when discussing pricing.\n" +
+      "✅ Clearly state: \"This is for material cost only.\"\n" +
+      "✅ Include this disclaimer: \"This is not a quote — material prices may vary depending on brand, availability, and local suppliers.\"\n\n" +
+      "🚫 Never include labor, install, or total pricing.\n" +
+      "🚫 Never apply markup.\n\n" +
+      "✅ If a user shows interest in starting a project, ask:\n" +
+      "\"Would you like to schedule a consultation to explore your options further?\"\n\n" +
+      "Only collect contact info if the user replies with name, email, and phone in one message.";
+
+    const messages = [
+      { role: "system", content: basePolicy },
+      ...(policy ? [{ role: "system", content: `Tenant Policy (${tenant}):\n${policy}` }] : []),
+      ...(voice  ? [{ role: "system", content: `Voice & Style Guide (${tenant}):\n${voice}` }] : []),
+      { role: "user", content: message }
+    ];
+
+    const start = Date.now();
+    const aiResponse = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages
+    });
+    const latency = Date.now() - start;
+    await logMetric("latency", latency, tenant || "unknown");
+
+    let costs = null;
+    if (aiResponse.usage) {
+      const { prompt_tokens, completion_tokens, cached_tokens = 0 } = aiResponse.usage;
+      costs = calculateCost(aiResponse.model || "gpt-4o-mini", prompt_tokens, completion_tokens, cached_tokens);
+
+      await logUsage({
+        model: aiResponse.model || "gpt-4o-mini",
+        prompt_tokens,
+        completion_tokens,
+        cached_tokens,
+        user: tenant || "unknown",
+        cost: costs.total,
+        breakdown: costs
+      }, tenant);
+    } // <-- important closing brace
+
+    const reply =
+      aiResponse.choices?.[0]?.message?.content ||
+      "✅ Solomon received your message but didn’t return a clear reply. Please try rephrasing.";
+
+    await logEvent("ai", reply, tenant);
+    await logConversation(sessionId, {
+      userMessage: message,
+      aiReply: reply,
+      tokens: aiResponse.usage || {},
+      cost: costs?.total || 0
+    }, tenant);
+
+    res.json({ reply });
+
+  } catch (err) {
+    console.error("❌ OpenAI Error:", err.message);
+    const category = err.message.includes("ENOTFOUND") ? "Network"
+                    : err.message.includes("OpenAI")    ? "OpenAI"
+                    : err.message.includes("SMTP")      ? "Email" : "Server";
+    await logError(category, err.message, tenant);
+    res.status(500).json({ reply: "⚠️ Sorry, Solomon had trouble processing your request. Please try again shortly." });
+  }
 });
 
 // ----------------- Google Drive OAuth -----------------
