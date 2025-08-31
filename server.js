@@ -20,26 +20,6 @@ const cache = new Map(); // key=abs path -> contents
 
 const sanitize = s => String(s||"").toLowerCase().replace(/[^a-z0-9_-]/g,"");
 
-function getTenant(req) {
-  const fromHeader = sanitize(req.headers["x-tenant"]);
-  if (fromHeader) { console.log(`🏷️ Tenant: ${fromHeader} (HEADER)`); return fromHeader; }
-
-  const fromQuery = sanitize(req.query.tenant);
-  if (fromQuery)  { console.log(`🏷️ Tenant: ${fromQuery} (QUERY)`);  return fromQuery; }
-
-  const fromEnv = sanitize(process.env.TENANT);
-  if (fromEnv)    { console.log(`🏷️ Tenant: ${fromEnv} (ENV)`);     return fromEnv; }
-
-  const host = String(req.hostname||"").toLowerCase();
-  const sub = host.split(".")[0];
-  if (sub && !["www","localhost","127.0.0.1","::1"].includes(sub)) {
-    console.log(`🏷️ Tenant: ${sub} (SUBDOMAIN)`);
-    return sanitize(sub);
-  }
-
-  console.log(`🏷️ Tenant: ${DEFAULT_TENANT} (DEFAULT)`);
-  return DEFAULT_TENANT;
-}
 
 // ✅ New subdomain-aware resolver (place it here, before readFileCached)
 function resolveTenantSlug(req) {
@@ -141,86 +121,120 @@ function ensureSid(req, res) {
   return sid;
 }
 
-// Middleware to log user message before /message handler and assistant reply after
+// Middleware to resolve tenant + persist conversation/messages
 app.use(async (req, res, next) => {
   if (req.method !== 'POST' || req.path !== '/message') return next();
 
   try {
-    // Resolve tenant by header/query/env/subdomain → DB row
+    // 🔎 Resolve tenant slug (subdomain/header/query/env)
     const tenantSlug = resolveTenantSlug(req);
 
+    // 🔑 Look up tenant row with all config we care about
     const tenantRow = await prisma.tenant.findFirst({
       where: {
         OR: [
-          { subdomain: tenantSlug },                              // preferred: subdomain
-          { id: tenantSlug },                                     // legacy fallback
-          { name: { equals: tenantSlug, mode: 'insensitive' } }   // legacy fallback
+          { subdomain: tenantSlug },
+          { id: tenantSlug },
+          { name: { equals: tenantSlug, mode: 'insensitive' } }
         ]
       },
-      select: { id: true }
+      select: {
+        id: true,
+        openaiKey: true,
+        smtpHost: true,
+        smtpPort: true,
+        smtpUser: true,
+        smtpPass: true,
+        emailFrom: true,
+        emailTo: true,
+        brandColor: true,
+        brandHover: true,
+        botBg: true,
+        botText: true,
+        userBg: true,
+        userText: true,
+        glassBg: true,
+        glassTop: true,
+        blurPx: true,
+        headerGlow: true,
+        watermarkUrl: true,
+        fontFamily: true,
+        googleClientId: true,
+        googleClientSecret: true,
+        googleRedirectUri: true,
+        googleTokens: true
+      }
     });
 
     if (!tenantRow) {
-      console.warn('tenant_not_found', { tenantSlug });
-      // Strict mode: uncomment to block unknown tenants
-      // return res.status(404).json({ error: 'tenant_not_found', tenant: tenantSlug });
+      console.warn("tenant_not_found", { tenantSlug });
+      // Optional: return res.status(404).json({ error: "tenant_not_found", tenant: tenantSlug });
     }
 
-    const tenantId = tenantRow ? tenantRow.id : tenantSlug;
-    const sessionId = ensureSid(req, res);
-    const userText = (req.body?.message || req.body?.content || req.body?.text || req.body?.prompt || '').toString().trim();
+    // 🏷️ Attach for use in downstream handlers
+    req.tenant = tenantRow;               // whole object
+    req.tenantId = tenantRow?.id || tenantSlug;
+    req.sessionId = ensureSid(req, res);
+
+    // ⌨️ Capture user text
+    const userText = (req.body?.message || req.body?.content || req.body?.text || req.body?.prompt || "").toString().trim();
     if (!userText) return next();
 
-    // now safe to upsert conversation
+    // 💾 Upsert conversation
     const convo = await prisma.conversation.upsert({
-      where: { tenantId_sessionId: { tenantId, sessionId } },
+      where: { tenantId_sessionId: { tenantId: req.tenantId, sessionId: req.sessionId } },
       update: {},
-      create: { tenantId, sessionId }
+      create: { tenantId: req.tenantId, sessionId: req.sessionId }
     });
 
-    // save user turn
-    await prisma.message.create({ data: { conversationId: convo.id, role: 'user', content: userText } });
+    // 💬 Save user turn
+    await prisma.message.create({ data: { conversationId: convo.id, role: "user", content: userText } });
 
-    // hook res.json to save assistant reply after your handler responds
+    // 📩 Hook res.json to capture AI replies automatically
     const origJson = res.json.bind(res);
     res.json = async (body) => {
       try {
         const replyText = (body && (body.reply || body.message || body.content || body.text))?.toString();
         if (replyText) {
-          await prisma.message.create({ data: { conversationId: convo.id, role: 'assistant', content: replyText } });
+          await prisma.message.create({ data: { conversationId: convo.id, role: "assistant", content: replyText } });
         }
       } catch (e) {
-        console.error('post-reply save failed', e);
+        console.error("post-reply save failed", e);
       }
       return origJson(body);
     };
 
     next();
   } catch (e) {
-    console.error('pre-route persistence failed', e);
+    console.error("tenant middleware failed", e);
     next(); // don’t block your bot
   }
 });
 
-
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
-
-const transporter = nodemailer.createTransport({
-  host: 'smtp.titan.email',
-  port: 465,
-  secure: true,
-  auth: {
-    user: process.env.LEAD_EMAIL_USER,
-    pass: process.env.LEAD_EMAIL_PASS,
+// Put this near resolveTenantSlug():
+async function loadTenant(req, res, next) {
+  try {
+    const tenantSlug = resolveTenantSlug(req);
+    const tenantRow = await prisma.tenant.findFirst({
+      where: {
+        OR: [
+          { subdomain: tenantSlug },
+          { id: tenantSlug },
+          { name: { equals: tenantSlug, mode: 'insensitive' } }
+        ]
+      }
+    });
+    if (!tenantRow) return res.status(404).send('Tenant not found');
+    req.tenant = tenantRow;
+    req.tenantId = tenantRow.id;
+    next();
+  } catch (e) {
+    console.error('loadTenant failed:', e);
+    res.status(500).send('Tenant lookup failed');
   }
-});
- // ✅ Verify SMTP connection at startup
-transporter.verify(err => {
-  if (err) console.error('SMTP verify failed:', err);
-  else console.log('SMTP ready');
-});
+}
+
+
 
 // --- Simple fuzzy tagger (no extra AI call) ---
 function normalize(s) {
@@ -252,36 +266,22 @@ function similar(a, b) {
   const d = levenshtein(a, b);
   return 1 - d / Math.max(a.length, b.length);
 }
+async function getTagDict(tenantId) {
+  const tagDict = await prisma.tagDictionary.findMany({
+    where: { tenantId },
+  });
 
-const TAG_DICT = {
-  // Design & Aesthetic
-  design:       ["design","designer","layout","plan","plans","concept","ideas","inspiration","rendering"],
-  style:        ["style","modern","contemporary","traditional","luxury","timeless","aesthetic","look","feel"],
-  finishes:     ["finish","finishes","materials","stone","marble","tile","wood","hardware","countertop","backsplash"],
-
-  // Spaces / Renovation Areas
-  kitchen:      ["kitchen","island","cabinets","countertops","appliances","pantry"],
-  bathroom:     ["bathroom","shower","tub","vanity","toilet","powder room"],
-  living:       ["living room","family room","fireplace","built-in","shelving"],
-  bedroom:      ["bedroom","master","closet","wardrobe"],
-  exterior:     ["exterior","patio","deck","outdoor","landscape","facade"],
-  addition:     ["addition","remodel","renovation","expansion","new build","construction"],
-
-  // Services / Technical
-  lighting:     ["lighting","light","fixture","fixtures","led","recessed","sconce","chandelier"],
-  electrical:   ["electrical","outlet","outlets","wiring","subpanel","breaker","ev charger"],
-  plumbing:     ["plumbing","sink","faucet","pipe","pipes","water","drain"],
-  insulation:   ["insulation","insulate","spray foam","r-value"],
-
-  // Client Intent
-  budget:       ["budget","price","pricing","cost","estimate","quote","range","ballpark"],
-  timeline:     ["timeline","schedule","timeframe","how long","when","availability"],
-  consultation: ["consultation","schedule","appointment","meeting","site visit","request","come out"],
-  inspiration:  ["idea","dream","vision","want","looking for","inspire","goal"]
-};
+  const dict = {};
+  for (const entry of tagDict) {
+    dict[entry.category] = entry.keywords;
+  }
+  return dict;
+}
 
 
-function extractTags(message) {
+async function extractTags(message, tenantId) {
+  const TAG_DICT = await getTagDict(tenantId); // fetch from DB per tenant
+
   const text = normalize(message);
   const tokens = text.split(" ");
   const contains = (needle) => text.includes(normalize(needle));
@@ -300,26 +300,23 @@ function extractTags(message) {
     if (kws.some(tokenFuzzyHas)) tags.add(tag);
   }
 
-  // small heuristic
   if (tags.has("budget") && (tags.has("flooring") || /floor/.test(text))) {
     tags.add("flooring");
   }
+
   return Array.from(tags);
 }
-
 
 // ----------------- Main chat endpoint -----------------
 app.post('/message', async (req, res) => {
   const { message, source } = req.body;
+  const { tenant, tenantId, sessionId } = req; // ✅ provided by middleware
 
   console.log("📨 Received message:", message);
   if (source) console.log("📍 Source:", source);
 
-  // resolve once and reuse
-  const tenant = resolveTenantSlug(req);
-  const sessionId = req.cookies?.sid || ensureSid(req, res);
-
-  await logEvent("user", message, tenant);
+  // ✅ Logging now uses tenantId
+  await logEvent("user", message, tenantId);
 
   // -------- Lead capture detection --------
   const emailMatch = message.match(/[\w.-]+@[\w.-]+\.[A-Za-z]{2,}/);
@@ -335,20 +332,31 @@ app.post('/message', async (req, res) => {
     const email = emailMatch[0];
     const phone = phoneMatch[0];
 
-    const tags = extractTags(message);
+    const tags = await extractTags(message, tenantId);
     console.log('leadTags', tags);
 
     // Log to admin + DB
     try {
-      await logLead({ name, email, phone, snippet: message, tags }, tenant);
+      await logLead({ name, email, phone, snippet: message, tags }, tenantId);
     } catch (e) {
       console.error("Failed to log lead to admin:", e.message);
     }
 
+    // 📧 Per-tenant SMTP
+    const transporter = nodemailer.createTransport({
+      host: tenant?.smtpHost || "smtp.titan.email",
+      port: tenant?.smtpPort || 465,
+      secure: true,
+      auth: {
+        user: tenant?.smtpUser,
+        pass: tenant?.smtpPass,
+      }
+    });
+
     const mailOptions = {
-      from: process.env.LEAD_EMAIL_USER,
-      to: process.env.LEAD_EMAIL_TO,
-      subject: '📥 New Consultation Request',
+      from: tenant?.emailFrom || tenant?.smtpUser,
+      to: tenant?.emailTo || "default@yourdomain.com",
+      subject: `📥 New Consultation Request (${tenant?.name || "Unknown Tenant"})`,
       text:
         "New Lead Captured:\n\n" +
         `Name: ${name}\nEmail: ${email}\nPhone: ${phone}\n` +
@@ -359,11 +367,11 @@ app.post('/message', async (req, res) => {
     transporter.sendMail(mailOptions, async (error, info) => {
       if (error) {
         console.error("❌ Email failed to send:", error);
-        await logError("Email", `Email failed: ${error.message}`, tenant);
+        await logError("Email", `Email failed: ${error.message}`, tenantId);
       } else {
         console.log("✅ Contact info sent via email:", info.response);
-        await logEvent("server", `Captured new lead: ${name}, ${email}, ${phone}`, tenant);
-        await logEvent("ai", "AI replied with: consultation confirmation", tenant);
+        await logEvent("server", `Captured new lead: ${name}, ${email}, ${phone}`, tenantId);
+        await logEvent("ai", "AI replied with: consultation confirmation", tenantId);
       }
     });
 
@@ -376,48 +384,24 @@ app.post('/message', async (req, res) => {
   try {
     console.log("🧠 Sending to OpenAI:", message);
 
-    // Load prompts using the same tenant
-    const { system, policy, voice } = await loadPrompts(tenant);
+    // Always load prompts (tenant OR default)
+    const { system, policy, voice } = await loadPrompts(req.tenant?.subdomain || "default");
 
-    const sysPathTenant = path.join(PROMPTS_DIR, tenant, "systemprompt.md");
-    const polPathTenant = path.join(PROMPTS_DIR, tenant, "policy.md");
-    const voiPathTenant = path.join(PROMPTS_DIR, tenant, "voice.md");
-    const sysPathDefault = path.join(PROMPTS_DIR, DEFAULT_TENANT, "systemprompt.md");
-    const polPathDefault = path.join(PROMPTS_DIR, DEFAULT_TENANT, "policy.md");
-    const voiPathDefault = path.join(PROMPTS_DIR, DEFAULT_TENANT, "voice.md");
+    // Always have at least a minimal system prompt
+    const systemPrompt = system || "You are Solomon, the professional AI assistant.";
 
-    console.log("🧩 Prompts loaded:", {
-      tenant,
-      system: system
-        ? { source: path.resolve(sysPathTenant), length: system.length }
-        : { source: path.resolve(sysPathDefault), note: "FALLBACK", length: (system || "").length },
-      policy: policy
-        ? { source: path.resolve(polPathTenant), length: policy.length }
-        : { source: path.resolve(polPathDefault), note: "FALLBACK", length: (policy || "").length },
-      voice: voice
-        ? { source: path.resolve(voiPathTenant), length: voice.length }
-        : { source: path.resolve(voiPathDefault), note: "FALLBACK", length: (voice || "").length },
-    });
-
-    const basePolicy =
-      (system && system.trim()) ||
-      "You are Solomon, the professional AI assistant for Elevated Garage.\n\n" +
-      "✅ Answer garage-related questions about materials like flooring, cabinetry, lighting, and more.\n" +
-      "✅ Only provide **average material costs** when discussing pricing.\n" +
-      "✅ Clearly state: \"This is for material cost only.\"\n" +
-      "✅ Include this disclaimer: \"This is not a quote — material prices may vary depending on brand, availability, and local suppliers.\"\n\n" +
-      "🚫 Never include labor, install, or total pricing.\n" +
-      "🚫 Never apply markup.\n\n" +
-      "✅ If a user shows interest in starting a project, ask:\n" +
-      "\"Would you like to schedule a consultation to explore your options further?\"\n\n" +
-      "Only collect contact info if the user replies with name, email, and phone in one message.";
-
+    // Build chat messages
     const messages = [
-      { role: "system", content: basePolicy },
-      ...(policy ? [{ role: "system", content: `Tenant Policy (${tenant}):\n${policy}` }] : []),
-      ...(voice  ? [{ role: "system", content: `Voice & Style Guide (${tenant}):\n${voice}` }] : []),
+      { role: "system", content: systemPrompt },
+      ...(policy ? [{ role: "system", content: `Tenant Policy (${tenant?.name || tenantId}):\n${policy}` }] : []),
+      ...(voice  ? [{ role: "system", content: `Voice & Style Guide (${tenant?.name || tenantId}):\n${voice}` }] : []),
       { role: "user", content: message }
     ];
+
+    // ✅ Use per-tenant OpenAI key
+    const openai = new OpenAI({
+      apiKey: tenant?.openaiKey || process.env.OPENAI_API_KEY,
+    });
 
     const start = Date.now();
     const aiResponse = await openai.chat.completions.create({
@@ -425,7 +409,7 @@ app.post('/message', async (req, res) => {
       messages
     });
     const latency = Date.now() - start;
-    await logMetric("latency", latency, tenant || "unknown");
+    await logMetric("latency", latency, tenantId);
 
     let costs = null;
     if (aiResponse.usage) {
@@ -437,23 +421,23 @@ app.post('/message', async (req, res) => {
         prompt_tokens,
         completion_tokens,
         cached_tokens,
-        user: tenant || "unknown",
+        user: tenantId,
         cost: costs.total,
         breakdown: costs
-      }, tenant);
-    } // <-- important closing brace
+      }, tenantId);
+    }
 
     const reply =
       aiResponse.choices?.[0]?.message?.content ||
       "✅ Solomon received your message but didn’t return a clear reply. Please try rephrasing.";
 
-    await logEvent("ai", reply, tenant);
+    await logEvent("ai", reply, tenantId);
     await logConversation(sessionId, {
       userMessage: message,
       aiReply: reply,
       tokens: aiResponse.usage || {},
       cost: costs?.total || 0
-    }, tenant);
+    }, tenantId);
 
     res.json({ reply });
 
@@ -462,40 +446,64 @@ app.post('/message', async (req, res) => {
     const category = err.message.includes("ENOTFOUND") ? "Network"
                     : err.message.includes("OpenAI")    ? "OpenAI"
                     : err.message.includes("SMTP")      ? "Email" : "Server";
-    await logError(category, err.message, tenant);
+    await logError(category, err.message, tenantId);
     res.status(500).json({ reply: "⚠️ Sorry, Solomon had trouble processing your request. Please try again shortly." });
   }
 });
 
+
+
 // ----------------- Google Drive OAuth -----------------
-const oauth2Client = new google.auth.OAuth2(
-  process.env.GOOGLE_CLIENT_ID,
-  process.env.GOOGLE_CLIENT_SECRET,
-  process.env.GOOGLE_REDIRECT_URI
-);
+function getOAuthClient(tenant) {
+  if (!tenant?.googleClientId || !tenant?.googleClientSecret || !tenant?.googleRedirectUri) {
+    throw new Error("Google OAuth not configured for tenant");
+  }
 
-app.get('/auth', (req, res) => {
-  const authUrl = oauth2Client.generateAuthUrl({
-    access_type: 'offline',
-    scope: ['https://www.googleapis.com/auth/drive.file'],
-    redirect_uri: process.env.GOOGLE_REDIRECT_URI
-  });
-  res.redirect(authUrl);
-});
+  return new google.auth.OAuth2(
+    tenant.googleClientId,
+    tenant.googleClientSecret,
+    tenant.googleRedirectUri
+  );
+}
 
-app.get('/api/oauth2callback', async (req, res) => {
-  const code = req.query.code;
-
+// --- Begin per-tenant Google OAuth routes ---
+app.get('/auth', loadTenant, async (req, res) => {
   try {
-    const { tokens } = await oauth2Client.getToken(code);
-    oauth2Client.setCredentials(tokens);
-    fs.writeFileSync('token.json', JSON.stringify(tokens, null, 2));
-    res.send("✅ Authorization successful! You may close this window.");
+    const { tenant } = req; // now defined
+    const oauth2Client = getOAuthClient(tenant);
+    const authUrl = oauth2Client.generateAuthUrl({
+      access_type: 'offline',
+      scope: ['https://www.googleapis.com/auth/drive.file'],
+      redirect_uri: tenant.googleRedirectUri
+    });
+    res.redirect(authUrl);
   } catch (err) {
-    console.error('❌ Error retrieving access token:', err.message);
-    res.status(500).send('Failed to authorize. Please try again.');
+    console.error("❌ OAuth Auth Error:", err.message);
+    res.status(500).send("OAuth initialization failed");
   }
 });
+
+app.get('/api/oauth2callback', loadTenant, async (req, res) => {
+  try {
+    const code = req.query.code;
+    const { tenant, tenantId } = req; // now defined
+    const oauth2Client = getOAuthClient(tenant);
+    const { tokens } = await oauth2Client.getToken(code);
+
+    await prisma.tenant.update({
+      where: { id: tenantId },
+      data: { googleTokens: tokens }
+    });
+
+    oauth2Client.setCredentials(tokens);
+    res.send("✅ Authorization successful! You may close this window.");
+  } catch (err) {
+    console.error("❌ Error retrieving access token:", err.message);
+    res.status(500).send("Failed to authorize. Please try again.");
+  }
+});
+
+
 
 // ----------------- Static pages -----------------
 app.get('/', (req, res) => {
@@ -506,29 +514,31 @@ app.get('/login', (req, res) => {
   res.redirect('/');
 });
 
-// add near your other routes
-app.get("/env.css", (req, res) => {
+app.get("/env.css", async (req, res) => {
+  const tenantSlug = resolveTenantSlug(req);
+  const tenant = await prisma.tenant.findFirst({ where: { subdomain: tenantSlug } });
+
   res.set("Content-Type", "text/css; charset=utf-8");
-  res.set("Cache-Control", "no-store"); // no caching
+  res.set("Cache-Control", "no-store");
 
   res.send(`
-    :root{
-      --brand:#${(process.env.BRAND_COLOR || "B91B21").replace(/^#/, "")};
-      --brandHover:#${(process.env.BRAND_HOVER || "99171b").replace(/^#/, "")};
-      --botBg:#${(process.env.BOT_BG || "fce7e7").replace(/^#/, "")};
-      --botText:#${(process.env.BOT_TEXT || "333333").replace(/^#/, "")};
-      --userBg:#${(process.env.USER_BG || "eeeeee").replace(/^#/, "")};
-      --userText:#${(process.env.USER_TEXT || "333333").replace(/^#/, "")};
-      --glassBg:${process.env.GLASS_BG || "rgba(255,255,255,0.25)"};
-      --glassTop:${process.env.GLASS_TOP || "rgba(255,255,255,0.1)"};
-      --blur:${process.env.BLUR_PX || "14px"};
-      --headerGlow:${process.env.HEADER_GLOW || "radial-gradient(circle, rgba(185,27,33,0.5) 0%, rgba(185,27,33,0) 75%)"};
-      --watermarkUrl:url('${process.env.WATERMARK_URL || "https://assets.zyrosite.com/YNqPvxrOE7FXXPyr/elevated-garage-icon33-Yan1jRDn0afzqlwp.png"}');
-      --borderColor:${process.env.BORDER_COLOR || "rgba(255,255,255,0.2)"};
-      --font:${JSON.stringify(process.env.FONT_FAMILY || "'Segoe UI', sans-serif")};
+    :root {
+      --brand: ${tenant?.brandColor || "#B91B21"};
+      --brandHover: ${tenant?.brandHover || "#99171b"};
+      --botBg: ${tenant?.botBg || "#fce7e7"};
+      --botText: ${tenant?.botText || "#333333"};
+      --userBg: ${tenant?.userBg || "#eeeeee"};
+      --userText: ${tenant?.userText || "#333333"};
+      --glassBg: ${tenant?.glassBg || "rgba(255,255,255,0.25)"};
+      --glassTop: ${tenant?.glassTop || "rgba(255,255,255,0.1)"};
+      --blur: ${tenant?.blurPx || "14px"};
+      --headerGlow: ${tenant?.headerGlow || "radial-gradient(circle, rgba(185,27,33,0.5) 0%, rgba(185,27,33,0) 75%)"};
+      --watermarkUrl: url('${tenant?.watermarkUrl || "https://default.logo.png"}');
+      --font: ${JSON.stringify(tenant?.fontFamily || "'Segoe UI', sans-serif")};
     }
   `);
 });
+
 
 
 // ----------------- Server startup -----------------
@@ -536,4 +546,5 @@ const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`✅ Solomon backend running on port ${PORT}`);
 });
+
 
