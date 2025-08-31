@@ -9,21 +9,57 @@ datasource db {
 }
 
 model Tenant {
-  id        String            @id @default(cuid())
+  id        String   @id @default(cuid())
   name      String
-  apiKey    String            @unique
-  plan      String            @default("basic")
-  createdAt DateTime          @default(now())
-  subdomain String?           @unique
-  branding  Json?             @default("{}")
-  settings  Json?             @default("{}")
-  convos    Conversation[]
-  convLogs  ConversationLog[]
-  events    Event[]
-  leads     Lead[]
-  metrics   Metric[]
-  usage     Usage[]
+  subdomain String?  @unique
+  plan      String   @default("basic")
+  createdAt DateTime @default(now())
+
+  // Email / SMTP
+  smtpHost  String?
+  smtpPort  Int?
+  smtpUser  String?
+  smtpPass  String?
+  emailFrom String?
+  emailTo   String?
+
+  // AI Keys
+  openaiKey String?
+
+  // Google OAuth
+  googleClientId     String?
+  googleClientSecret String?
+  googleRedirectUri  String?
+  googleTokens       Json?
+
+  // Branding / CSS
+  brandColor   String?
+  brandHover   String?
+  botBg        String?
+  botText      String?
+  userBg       String?
+  userText     String?
+  glassBg      String?
+  glassTop     String?
+  blurPx       String?
+  headerGlow   String?
+  watermarkUrl String?
+  fontFamily   String?
+
+  // JSON blobs
+  branding Json?
+  settings Json?
+
+  // Relationships
+  convos    Conversation[]   @relation(onDelete: Cascade)
+  convLogs  ConversationLog[] @relation(onDelete: Cascade)
+  events    Event[]           @relation(onDelete: Cascade)
+  leads     Lead[]            @relation(onDelete: Cascade)
+  metrics   Metric[]          @relation(onDelete: Cascade)
+  usage     Usage[]           @relation(onDelete: Cascade)
+  tags      TagDictionary[]   @relation(onDelete: Cascade)
 }
+
 
 model Conversation {
   id        String    @id @default(cuid())
@@ -110,4 +146,16 @@ model ConversationLog {
   tenant    Tenant   @relation(fields: [tenantId], references: [id])
 
   @@index([tenantId])
+}
+
+model TagDictionary {
+  id        String   @id @default(cuid())
+  tenantId  String
+  category  String   // e.g. "design", "budget"
+  keywords  String[] // e.g. ["design","designer","layout"]
+
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@unique([tenantId, category]) // each tenant can only have one "design" category
 }
