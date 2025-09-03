@@ -1,6 +1,5 @@
 // server.js
 const express = require('express');
-const fs = require('fs');
 const fsp = require("fs").promises;
 const path = require('path');
 const nodemailer = require('nodemailer');
@@ -10,20 +9,37 @@ const cookieParser = require('cookie-parser');
 
 const cors = require('cors');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
-console.log("ENV.TENANT =", process.env.TENANT);
 
-
+const { encrypt, decrypt, isEncrypted, hasKey } = require('./utils/kms');
 const PROMPTS_DIR = process.env.PROMPTS_DIR || "prompts/tenants";
 const DEFAULT_TENANT = (process.env.DEFAULT_TENANT || "default").toLowerCase();
 const HOT = process.env.HOT_RELOAD_PROMPTS === "1";
 const cache = new Map(); // key=abs path -> contents
 
-const sanitize = s => String(s||"").toLowerCase().replace(/[^a-z0-9_-]/g,"");
+// NEW: normalize/decrypt sensitive tenant fields for runtime use
+function materializeTenantSecrets(t) {
+  if (!t) return t;
+  const out = { ...t };
+
+  try { if (out.smtpPass)   out.smtpPass   = decrypt(out.smtpPass); } catch {}
+  try { if (out.openaiKey)  out.openaiKey  = decrypt(out.openaiKey); } catch {}
+  try {
+    if (out.googleTokens) {
+      if (typeof out.googleTokens === 'string' && isEncrypted(out.googleTokens)) {
+        out.googleTokens = JSON.parse(decrypt(out.googleTokens));
+      }
+      // if it's already an object, leave it alone
+    }
+  } catch {}
+
+  return out;
+}
 
 
-// ✅ New subdomain-aware resolver (place it here, before readFileCached)
+
+// ---------- Tenant resolver (header → query → subdomain → DEFAULT_TENANT) ----------
 function resolveTenantSlug(req) {
-  const sanitize = s => String(s||"").toLowerCase().replace(/[^a-z0-9_-]/g,"");
+  const sanitize = s => String(s || "").toLowerCase().replace(/[^a-z0-9_-]/g, "");
 
   const fromHeader = sanitize(req.headers["x-tenant"]);
   if (fromHeader) return fromHeader;
@@ -31,17 +47,15 @@ function resolveTenantSlug(req) {
   const fromQuery = sanitize(req.query.tenant);
   if (fromQuery) return fromQuery;
 
-  const fromEnv = sanitize(process.env.TENANT);
-  if (fromEnv) return fromEnv;
-
-  const host = String(req.hostname||"").toLowerCase();
+  const host = String(req.hostname || "").toLowerCase();
   const sub = host.split(".")[0];
-  if (sub && !["www","localhost","127.0.0.1","::1","admin"].includes(sub)) {
+  if (sub && !["www", "localhost", "127.0.0.1", "::1", "admin"].includes(sub)) {
     return sanitize(sub);
   }
 
   return (process.env.DEFAULT_TENANT || "default").toLowerCase();
 }
+
 
 async function readFileCached(p) {
   if (!HOT && cache.has(p)) return cache.get(p);
@@ -77,13 +91,7 @@ async function loadPrompts(tenant) {
   };
 }
 
-// Fail-fast / warn for required env
-const REQUIRED_ENV = ["LEAD_EMAIL_USER", "LEAD_EMAIL_PASS", "LEAD_EMAIL_TO"];
-for (const k of REQUIRED_ENV) {
-  if (!process.env[k]) {
-    console.warn(`⚠️ Missing ${k} in .env`);
-  }
-}
+
 
 // Admin logging helpers
 const {
@@ -121,76 +129,65 @@ function ensureSid(req, res) {
   return sid;
 }
 
-// Middleware to resolve tenant + persist conversation/messages
+// ---------- /message middleware: resolve tenant, ensure real tenantId, persist messages ----------
 app.use(async (req, res, next) => {
   if (req.method !== 'POST' || req.path !== '/message') return next();
 
   try {
-    // 🔎 Resolve tenant slug (subdomain/header/query/env)
     const tenantSlug = resolveTenantSlug(req);
 
-    // 🔑 Look up tenant row with all config we care about
-    const tenantRow = await prisma.tenant.findFirst({
-      where: {
-        OR: [
-          { subdomain: tenantSlug },
-          { id: tenantSlug },
-          { name: { equals: tenantSlug, mode: 'insensitive' } }
-        ]
-      },
-      select: {
-        id: true,
-        openaiKey: true,
-        smtpHost: true,
-        smtpPort: true,
-        smtpUser: true,
-        smtpPass: true,
-        emailFrom: true,
-        emailTo: true,
-        brandColor: true,
-        brandHover: true,
-        botBg: true,
-        botText: true,
-        userBg: true,
-        userText: true,
-        glassBg: true,
-        glassTop: true,
-        blurPx: true,
-        headerGlow: true,
-        watermarkUrl: true,
-        fontFamily: true,
-        googleClientId: true,
-        googleClientSecret: true,
-        googleRedirectUri: true,
-        googleTokens: true
-      }
+    // Look up tenant by subdomain OR id, else fall back to DEFAULT_TENANT
+    const tenantSelect = {
+      id: true, name: true, subdomain: true,
+      openaiKey: true,
+      smtpHost: true, smtpPort: true, smtpUser: true, smtpPass: true,
+      emailFrom: true, emailTo: true,
+      brandColor: true, brandHover: true, botBg: true, botText: true,
+      userBg: true, userText: true, glassBg: true, glassTop: true, blurPx: true,
+      headerGlow: true, watermarkUrl: true, fontFamily: true,
+      googleClientId: true, googleClientSecret: true, googleRedirectUri: true, googleTokens: true
+    };
+
+    let tenantRow = await prisma.tenant.findFirst({
+      where: { OR: [{ subdomain: tenantSlug }, { id: tenantSlug }] },
+      select: tenantSelect
     });
+
+    if (!tenantRow && tenantSlug !== DEFAULT_TENANT) {
+      tenantRow = await prisma.tenant.findFirst({
+        where: { OR: [{ subdomain: DEFAULT_TENANT }, { id: DEFAULT_TENANT }] },
+        select: tenantSelect
+      });
+    }
 
     if (!tenantRow) {
       console.warn("tenant_not_found", { tenantSlug });
-      // Optional: return res.status(404).json({ error: "tenant_not_found", tenant: tenantSlug });
+      return res.status(404).json({ error: "tenant_not_found", tenant: tenantSlug });
     }
 
-    // 🏷️ Attach for use in downstream handlers
-    req.tenant = tenantRow;               // whole object
-    req.tenantId = tenantRow?.id || tenantSlug;
+    
+    // Attach decrypted/materialized tenant to req
+    const tenantRowDec = materializeTenantSecrets(tenantRow);
+    req.tenant = tenantRowDec;
+    req.tenantId = tenantRowDec.id;
+
     req.sessionId = ensureSid(req, res);
 
-    // ⌨️ Capture user text
+    // Capture user text (if missing, still allow route handler to decide)
     const userText = (req.body?.message || req.body?.content || req.body?.text || req.body?.prompt || "").toString().trim();
-    if (!userText) return next();
 
-    // 💾 Upsert conversation
+    // Upsert conversation & save user turn if we have text
     const convo = await prisma.conversation.upsert({
       where: { tenantId_sessionId: { tenantId: req.tenantId, sessionId: req.sessionId } },
       update: {},
       create: { tenantId: req.tenantId, sessionId: req.sessionId }
     });
 
-    // 💬 Save user turn
-    await prisma.message.create({ data: { conversationId: convo.id, role: "user", content: userText } });
+    if (userText) {
+      await prisma.message.create({ data: { conversationId: convo.id, role: "user", content: userText } });
+    }
 
-    // 📩 Hook res.json to capture AI replies automatically
+    // Hook res.json to capture assistant reply automatically
     const origJson = res.json.bind(res);
     res.json = async (body) => {
       try {
@@ -207,9 +204,10 @@ app.use(async (req, res, next) => {
     next();
   } catch (e) {
     console.error("tenant middleware failed", e);
-    next(); // don’t block your bot
+    next(); // don't block the bot if logging fails
   }
 });
+
 
 // Put this near resolveTenantSlug():
 async function loadTenant(req, res, next) {
@@ -225,8 +223,9 @@ async function loadTenant(req, res, next) {
       }
     });
     if (!tenantRow) return res.status(404).send('Tenant not found');
-    req.tenant = tenantRow;
-    req.tenantId = tenantRow.id;
+    const dec = materializeTenantSecrets(tenantRow);
+    req.tenant = dec;
+    req.tenantId = dec.id;
     next();
   } catch (e) {
     console.error('loadTenant failed:', e);
@@ -310,34 +309,36 @@ async function extractTags(message, tenantId) {
 // ----------------- Main chat endpoint -----------------
 app.post('/message', async (req, res) => {
   const { message, source } = req.body;
+  const text = (message ?? '').toString();   // <— guard
   const { tenant, tenantId, sessionId } = req; // ✅ provided by middleware
 
-  console.log("📨 Received message:", message);
+  console.log("📨 Received message:", text);
   if (source) console.log("📍 Source:", source);
 
   // ✅ Logging now uses tenantId
-  await logEvent("user", message, tenantId);
+  await logEvent("user", text, tenantId);
+
 
   // -------- Lead capture detection --------
-  const emailMatch = message.match(/[\w.-]+@[\w.-]+\.[A-Za-z]{2,}/);
-  const phoneMatch = message.match(/\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/);
+  const emailMatch = text.match(/[\w.-]+@[\w.-]+\.[A-Za-z]{2,}/);
+  const phoneMatch = text.match(/\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/);
   const nameRegex = /\b([A-Z][a-z]+(?:\s[A-Z][a-z]+)+)\b/;
-  const nameLikely = nameRegex.test(message);
+  const nameLikely = nameRegex.test(text);
 
   console.log('leadCheck', { source, nameLikely, email: !!emailMatch, phone: !!phoneMatch });
 
   if ((source === "contact" || (emailMatch && phoneMatch && nameLikely))) {
-    const nameMatch = message.match(nameRegex);
+    const nameMatch = text.match(nameRegex);
     const name = nameMatch ? nameMatch[0] : "N/A";
     const email = emailMatch[0];
     const phone = phoneMatch[0];
 
-    const tags = await extractTags(message, tenantId);
+    const tags = await extractTags(text, tenantId);
     console.log('leadTags', tags);
 
     // Log to admin + DB
     try {
-      await logLead({ name, email, phone, snippet: message, tags }, tenantId);
+      await logLead({ name, email, phone, snippet: text, tags }, tenantId);
     } catch (e) {
       console.error("Failed to log lead to admin:", e.message);
     }
@@ -361,7 +362,7 @@ app.post('/message', async (req, res) => {
         "New Lead Captured:\n\n" +
         `Name: ${name}\nEmail: ${email}\nPhone: ${phone}\n` +
         `Tags: ${tags.join(', ')}\n\n` +
-        `Original Message: ${message}`
+        `Original Message: ${text}`
     };
 
     transporter.sendMail(mailOptions, async (error, info) => {
@@ -385,7 +386,7 @@ app.post('/message', async (req, res) => {
     console.log("🧠 Sending to OpenAI:", message);
 
     // Always load prompts (tenant OR default)
-    const { system, policy, voice } = await loadPrompts(req.tenant?.subdomain || "default");
+    const { system, policy, voice } = await loadPrompts(req.tenant?.subdomain || DEFAULT_TENANT);
 
     // Always have at least a minimal system prompt
     const systemPrompt = system || "You are Solomon, the professional AI assistant.";
@@ -395,7 +396,7 @@ app.post('/message', async (req, res) => {
       { role: "system", content: systemPrompt },
       ...(policy ? [{ role: "system", content: `Tenant Policy (${tenant?.name || tenantId}):\n${policy}` }] : []),
       ...(voice  ? [{ role: "system", content: `Voice & Style Guide (${tenant?.name || tenantId}):\n${voice}` }] : []),
-      { role: "user", content: message }
+      { role: "user", content: text }
     ];
 
     // ✅ Use per-tenant OpenAI key
@@ -422,7 +423,7 @@ app.post('/message', async (req, res) => {
         completion_tokens,
         cached_tokens,
         user: tenantId,
-        cost: costs.total,
+        costUSD: costs.total,
         breakdown: costs
       }, tenantId);
     }
@@ -492,8 +493,9 @@ app.get('/api/oauth2callback', loadTenant, async (req, res) => {
 
     await prisma.tenant.update({
       where: { id: tenantId },
-      data: { googleTokens: tokens }
+      data: { googleTokens: encrypt(JSON.stringify(tokens)) }
     });
+
 
     oauth2Client.setCredentials(tokens);
     res.send("✅ Authorization successful! You may close this window.");
@@ -514,31 +516,73 @@ app.get('/login', (req, res) => {
   res.redirect('/');
 });
 
-app.get("/env.css", async (req, res) => {
-  const tenantSlug = resolveTenantSlug(req);
-  const tenant = await prisma.tenant.findFirst({ where: { subdomain: tenantSlug } });
+// ---------- /env.css (tenant-aware; neutral → earth defaults) ----------
+const esc = {
+  str: (v='') => String(v).replace(/["\\]/g, m => ({'"':'\\"','\\':'\\\\'}[m])),
+  url: (v='') => String(v).replace(/[")\\]/g, m => ({')':'%29','"':'%22','\\':'%5C'}[m])),
+};
 
-  res.set("Content-Type", "text/css; charset=utf-8");
-  res.set("Cache-Control", "no-store");
+function toCssVars(t = {}) {
+  const defaults = {
+    font: "'Segoe UI', system-ui, sans-serif",
+    // Neutral → Earth palette
+    brand:      '#6B705C',
+    brandHover: '#556052',
+    glassBg:    'rgba(250,248,244,0.88)',
+    glassTop:   'rgba(250,248,244,0.78)',
+    blur:       '10px',
+    botBg:      '#F4F1EA',
+    botText:    '#2C2C2C',
+    userBg:     '#8A7B68',
+    userText:   '#FFFFFF',
+    borderColor:'#D9D6CE',
+    headerGlow: 'radial-gradient(50% 50% at 50% 50%, rgba(107,112,92,0.35) 0%, rgba(107,112,92,0) 70%)',
+    watermarkUrl: 'none'
+  };
+  const fromTenant = {
+    brand: t.brandColor || t.branding?.brand,
+    brandHover: t.brandHover || t.branding?.brandHover,
+    glassBg: t.glassBg,
+    glassTop: t.glassTop,
+    blur: t.blurPx,
+    botBg: t.botBg,
+    botText: t.botText,
+    userBg: t.userBg,
+    userText: t.userText,
+    headerGlow: t.headerGlow,
+    font: t.fontFamily,
+    watermarkUrl: t.watermarkUrl ? `url("${esc.url(t.watermarkUrl)}")` : undefined
+  };
+  return { ...defaults, ...Object.fromEntries(Object.entries(fromTenant).filter(([,v]) => v != null && v !== '')) };
+}
 
-  res.send(`
-    :root {
-      --brand: ${tenant?.brandColor || "#B91B21"};
-      --brandHover: ${tenant?.brandHover || "#99171b"};
-      --botBg: ${tenant?.botBg || "#fce7e7"};
-      --botText: ${tenant?.botText || "#333333"};
-      --userBg: ${tenant?.userBg || "#eeeeee"};
-      --userText: ${tenant?.userText || "#333333"};
-      --glassBg: ${tenant?.glassBg || "rgba(255,255,255,0.25)"};
-      --glassTop: ${tenant?.glassTop || "rgba(255,255,255,0.1)"};
-      --blur: ${tenant?.blurPx || "14px"};
-      --headerGlow: ${tenant?.headerGlow || "radial-gradient(circle, rgba(185,27,33,0.5) 0%, rgba(185,27,33,0) 75%)"};
-      --watermarkUrl: url('${tenant?.watermarkUrl || "https://default.logo.png"}');
-      --font: ${JSON.stringify(tenant?.fontFamily || "'Segoe UI', sans-serif")};
+app.get('/env.css', async (req, res) => {
+  try {
+    const hint = resolveTenantSlug(req);
+
+    let tenant = await prisma.tenant.findFirst({
+      where: { OR: [{ subdomain: hint }, { id: hint }] }
+    });
+
+    if (!tenant && hint !== DEFAULT_TENANT) {
+      tenant = await prisma.tenant.findFirst({
+        where: { OR: [{ subdomain: DEFAULT_TENANT }, { id: DEFAULT_TENANT }] }
+      });
     }
-  `);
-});
 
+    const vars = toCssVars(tenant || {});
+    const css = `:root{` + Object.entries(vars).map(([k,v]) => `--${k}:${v};`).join(' ') + `}`;
+
+    res.set('Content-Type', 'text/css; charset=utf-8');
+    res.set('Cache-Control', 'no-store'); // always fresh branding
+    return res.send(css);
+  } catch (e) {
+    console.error('env.css error', e);
+    res.set('Content-Type', 'text/css; charset=utf-8');
+    res.set('Cache-Control', 'no-store');
+    return res.send(`:root{--brand:#6B705C;--brandHover:#556052;--glassBg:rgba(250,248,244,0.88);--glassTop:rgba(250,248,244,0.78);--blur:10px;--botBg:#F4F1EA;--botText:#2C2C2C;--userBg:#8A7B68;--userText:#FFFFFF;--borderColor:#D9D6CE;--headerGlow:radial-gradient(50% 50% at 50% 50%, rgba(107,112,92,0.35) 0%, rgba(107,112,92,0) 70%);--watermarkUrl:none;--font:'Segoe UI', system-ui, sans-serif;}`);
+  }
+});
 
 
 // ----------------- Server startup -----------------
@@ -546,5 +590,6 @@ const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`✅ Solomon backend running on port ${PORT}`);
 });
+
 
 
