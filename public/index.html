@@ -4,127 +4,121 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Solomon</title>
-  
-    <!-- Load env-driven CSS variables first -->
-  <link rel="stylesheet" href="/env.css?v=1.0.1">
 
+  <!-- Server-generated tenant CSS -->
+  <link id="env-css" rel="stylesheet" href="/env.css?v=1.0.1">
 
-<style>
-  html, body {
-    margin: 0; padding: 0; height: 100%;
-    font-family: var(--font);
-    background: transparent;
-    display: flex; flex-direction: column;
-    overflow: hidden;
-  }
+  <style>
+    :root{
+      /* Neutral → Earth fallbacks (used only if /env.css hasn't loaded yet) */
+      --font: system-ui, -apple-system, 'Segoe UI', Roboto, Ubuntu, Cantarell, 'Helvetica Neue', Arial, 'Noto Sans', 'Apple Color Emoji', 'Segoe UI Emoji';
+      --brand:#6B705C;               /* sage */
+      --brandHover:#556052;          /* deep sage */
+      --glassBg:rgba(250,248,244,0.88); /* warm parchment */
+      --glassTop:rgba(250,248,244,0.78);
+      --blur:10px;
+      --botBg:#F4F1EA;               /* parchment */
+      --botText:#2C2C2C;             /* charcoal */
+      --userBg:#8A7B68;              /* mushroom/taupe */
+      --userText:#FFFFFF;            /* white */
+      --borderColor:#D9D6CE;         /* linen */
+      --headerGlow:radial-gradient(50% 50% at 50% 50%, rgba(107,112,92,0.35) 0%, rgba(107,112,92,0) 70%);
+      --watermarkUrl:none;
+    }
 
-  .container {
-    display: flex; flex-direction: column;
-    width: 100%; height: 100%;
-    background: var(--glassBg);
-    backdrop-filter: blur(var(--blur));
-    border-radius: 14px;
-    box-shadow: 0 8px 24px rgba(0,0,0,0.15);
-    position: relative; overflow: hidden;
-  }
+    html, body {
+      margin: 0; padding: 0; height: 100%;
+      font-family: var(--font);
+      background: transparent;
+      display: flex; flex-direction: column;
+      overflow: hidden;
+    }
 
-  /* ✅ Watermark */
-  .container::before {
-    content: "";
-    position: absolute; inset: 0;
-    top: 50%; left: 50%; transform: translate(-50%, -50%);
-    width: 500px; height: 500px;
-    background: var(--watermarkUrl) center center no-repeat;
-    background-size: contain;
-    opacity: 0.25; pointer-events: none; z-index: 0;
-  }
+    .container {
+      display: flex; flex-direction: column;
+      width: 100%; height: 100%;
+      background: var(--glassBg);
+      backdrop-filter: blur(var(--blur));
+      border-radius: 14px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.15);
+      position: relative; overflow: hidden;
+    }
 
-  .header, .chat-box, .input-row, #typing { position: relative; z-index: 1; }
+    /* ✅ Watermark */
+    .container::before {
+      content: "";
+      position: absolute; inset: 0;
+      top: 50%; left: 50%; transform: translate(-50%, -50%);
+      width: 500px; height: 500px;
+      background: var(--watermarkUrl) center center no-repeat;
+      background-size: contain;
+      opacity: 0.25; pointer-events: none; z-index: 0;
+    }
 
-  .header {
-    text-align: center; padding: 1rem;
-    color: white; font-weight: bold; font-size: 1.2rem;
-    background: transparent;
-  }
+    .header, .chat-box, .input-row, #typing { position: relative; z-index: 1; }
 
-  .header::before {
-    content: "";
-    position: absolute; top: -20px; left: 50%;
-    transform: translateX(-50%);
-    width: 480px; height: 120px;
-    background: var(--headerGlow);
-    filter: blur(36px); z-index: -1; border-radius: 40px;
-  }
+    .header {
+      text-align: center; padding: 1rem;
+      color: white; font-weight: bold; font-size: 1.2rem;
+      background: transparent;
+    }
+    .header::before {
+      content: "";
+      position: absolute; top: -20px; left: 50%;
+      transform: translateX(-50%);
+      width: 480px; height: 120px;
+      background: var(--headerGlow);
+      filter: blur(36px); z-index: -1; border-radius: 40px;
+    }
 
-  .chat-box {
-    flex: 1; padding: 1rem; overflow-y: auto;
-    display: flex; flex-direction: column; gap: 0.5rem;
-  }
+    .chat-box {
+      flex: 1; padding: 1rem; overflow-y: auto;
+      display: flex; flex-direction: column; gap: 0.5rem;
+    }
 
-  .message {
-    padding: 0.8rem 1rem; border-radius: 18px; max-width: 80%;
-    line-height: 1.4; box-shadow: 0 2px 6px rgba(0,0,0,0.1);
-  }
+    .message {
+      padding: 0.8rem 1rem; border-radius: 18px; max-width: 80%;
+      line-height: 1.4; box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+      word-wrap: break-word; white-space: pre-wrap;
+    }
 
-  .bot {
-    background: var(--botBg);
-    color: var(--botText);
-    align-self: flex-start;
-  }
+    .bot { background: var(--botBg); color: var(--botText); align-self: flex-start; }
+    .user { background: var(--userBg); color: var(--userText); align-self: flex-end; }
 
-  .user {
-    background: var(--userBg);
-    color: var(--userText);
-    align-self: flex-end;
-  }
+    #typing {
+      font-style: italic; font-size: 0.9rem;
+      color: var(--brand);
+      padding-left: 1rem; display: none;
+    }
 
-  #typing {
-    font-style: italic; font-size: 0.9rem;
-    color: var(--brand);
-    padding-left: 1rem; display: none;
-  }
+    .input-row {
+      display: flex; padding: 1rem;
+      border-top: 1px solid var(--borderColor);
+      backdrop-filter: blur(10px);
+      background: var(--glassTop);
+    }
 
-  .input-row {
-    display: flex; padding: 1rem;
-    border-top: 1px solid var(--borderColor);
-    backdrop-filter: blur(10px);
-    background: var(--glassTop);
-  }
+    .input-row input[type="text"] {
+      flex: 1; padding: 0.6rem; font-size: 1rem;
+      border-radius: 10px; border: 1px solid #ccc; outline: none;
+      background-color: rgba(255,255,255,0.8);
+    }
 
-  .input-row input[type="text"] {
-    flex: 1; padding: 0.6rem; font-size: 1rem;
-    border-radius: 10px; border: 1px solid #ccc; outline: none;
-    background-color: rgba(255,255,255,0.8);
-  }
+    .input-row button {
+      margin-left: 0.5rem; padding: 0.6rem 1rem;
+      background: var(--brand); color: white;
+      border: none; border-radius: 10px; font-weight: bold;
+      cursor: pointer; transition: background 0.3s ease;
+    }
+    .input-row button:hover { background: var(--brandHover); }
 
-  .input-row button {
-    margin-left: 0.5rem; padding: 0.6rem 1rem;
-    background: var(--brand); color: white;
-    border: none; border-radius: 10px; font-weight: bold;
-    cursor: pointer; transition: background 0.3s ease;
-  }
-  .message ul,
-  .message ol {
-    margin: 0.5em 0 0.5em 1.5em;
-    padding-left: 1.2em;
-  }
+    .message p { margin: 0 0 .5em; }
+    .message pre, .message code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .message pre { padding: .6em .8em; background: rgba(0,0,0,.04); border-radius: 10px; overflow:auto; }
 
-  .message li {
-    margin-bottom: 0.4em;
-    line-height: 1.5em;
-  }
-
-
-  .input-row button:hover { background: var(--brandHover); }
-  .message p { margin: 0 0 .5em; }
-  .message pre, .message code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-  .message pre { padding: .6em .8em; background: rgba(0,0,0,.04); border-radius: 10px; overflow:auto; }
-
-</style>
-
-
-
-
+    .message ul, .message ol { margin: 0.5em 0 0.5em 1.5em; padding-left: 1.2em; }
+    .message li { margin-bottom: 0.4em; line-height: 1.5em; }
+  </style>
 </head>
 <body>
   <div class="container">
@@ -133,55 +127,10 @@
       <div class="message bot">👋 Hello my name is Solomon. How can I help you today?</div>
     </div>
     <div id="typing">Solomon is typing...</div>
-    <form id="chat-form" class="input-row">
-      <input type="text" id="user-input" placeholder="Type your message..." required />
-      <button type="submit">Send</button>
+    <form id="chat-form" class="input-row" autocomplete="off">
+      <input type="text" id="user-input" placeholder="Type your message..." required aria-label="Your message"/>
+      <button type="submit" aria-label="Send message">Send</button>
     </form>
   </div>
-<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-<!-- (optional harden) -->
-<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.7/dist/purify.min.js"></script>
-<script>
-  const chatBox = document.getElementById("chat-box");
-  const typing = document.getElementById("typing");
-  const form = document.getElementById("chat-form");
-  const input = document.getElementById("user-input");
 
-  function renderMarkdown(md) {
-    const html = marked.parse(md, { breaks: true });
-    return window.DOMPurify ? DOMPurify.sanitize(html) : html;
-  }
-
-  function appendMessage(text, sender) {
-    const div = document.createElement("div");
-    div.classList.add("message", sender);
-    div.innerHTML = renderMarkdown(text);
-    chatBox.appendChild(div);
-    chatBox.scrollTop = chatBox.scrollHeight;
-  }
-
-  form.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const message = input.value.trim();
-    if (!message) return;
-    appendMessage(message, "user");
-    input.value = "";
-    typing.style.display = "block";
-
-    try {
-      const res = await fetch("/message", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message })
-      });
-      const data = await res.json();
-      appendMessage(data.reply, "bot");
-    } catch {
-      appendMessage("Sorry, Solomon couldn’t respond right now. Please try again.", "bot");
-    }
-
-    typing.style.display = "none";
-  });
-</script>
-</body>
-</html>
+  <!-- Markdown + s
