@@ -1,3 +1,4 @@
+// schema.prisma
 generator client {
   provider = "prisma-client-js"
 }
@@ -7,11 +8,11 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-
 model Tenant {
   id        String   @id @default(cuid())
   name      String
   subdomain String?  @unique
+  apiKey    String?  @unique
   plan      String   @default("basic")
   createdAt DateTime @default(now())
 
@@ -46,18 +47,19 @@ model Tenant {
   watermarkUrl String?
   fontFamily   String?
 
-  // JSON blobs
-  branding Json?
-  settings Json?
+  // JSON blobs (keep defaults to avoid null checks everywhere)
+  branding Json? @default("{}")
+  settings Json? @default("{}")
 
-  // Relationships (no onDelete here)
-  convos    Conversation[]
-  convLogs  ConversationLog[]
-  events    Event[]
-  leads     Lead[]
-  metrics   Metric[]
-  usage     Usage[]
-  tags      TagDictionary[]
+  // Relations
+  convos     Conversation[]
+  convLogs   ConversationLog[]
+  events     Event[]
+  leads      Lead[]
+  metrics    Metric[]
+  usage      Usage[]
+  tags       TagDictionary[]
+  adminUsers AdminUser[]
 }
 
 model Conversation {
@@ -72,6 +74,7 @@ model Conversation {
 
   @@unique([tenantId, sessionId])
   @@index([tenantId])
+  @@index([tenantId, startedAt]) // added: matches recent-by-tenant reads
 }
 
 model Message {
@@ -86,6 +89,7 @@ model Message {
   conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 
   @@index([conversationId])
+  @@index([conversationId, createdAt]) // added: speeds last-message lookups
 }
 
 model Lead {
@@ -95,7 +99,7 @@ model Lead {
   email     String
   phone     String
   snippet   String
-  tags      String[]
+  tags      String[] @default([]) // added: avoid null checks
   createdAt DateTime @default(now())
 
   tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -113,6 +117,8 @@ model Event {
   tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@index([tenantId])
+  @@index([tenantId, createdAt])
+  @@index([tenantId, type, createdAt]) // added: speeds errors-by-tenant latest
 }
 
 model Usage {
@@ -123,11 +129,13 @@ model Usage {
   completionTokens Int
   cachedTokens     Int
   cost             Float
+  breakdown        Json?
   createdAt        DateTime @default(now())
 
   tenant           Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@index([tenantId])
+  @@index([tenantId, createdAt])
 }
 
 model Metric {
@@ -140,6 +148,7 @@ model Metric {
   tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@index([tenantId])
+  @@index([tenantId, name, createdAt])
 }
 
 model ConversationLog {
@@ -158,10 +167,23 @@ model TagDictionary {
   id        String   @id @default(cuid())
   tenantId  String
   category  String
-  keywords  String[]
+  keywords  String[] @default([]) // added: avoid null checks
 
   tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@index([tenantId])
   @@unique([tenantId, category])
+}
+
+model AdminUser {
+  id           String   @id @default(cuid())
+  tenantId     String
+  email        String
+  passwordHash String
+  createdAt    DateTime @default(now())
+
+  tenant       Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@unique([tenantId, email]) // per-tenant unique emails
 }
