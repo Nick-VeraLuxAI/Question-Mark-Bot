@@ -119,6 +119,41 @@ app.use(cookieParser());
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 
+// ---------- DB-first prompts loader with fallback to DEFAULT + files ----------
+async function loadPromptsDBFirst(req) {
+  // 1) This tenant's DB prompts
+  const p = (req.tenant?.prompts) || {};
+  let out = {
+    system: p.system || '',
+    policy: p.policy || '',
+    voice:  p.voice  || ''
+  };
+
+  // 2) Fill gaps from DEFAULT tenant's DB prompts
+  const thisIdLower = (req.tenant?.id || '').toLowerCase();
+  if ((!out.system || !out.policy || !out.voice) && thisIdLower !== DEFAULT_TENANT) {
+    const def = await prisma.tenant.findFirst({
+      where: { OR: [{ id: DEFAULT_TENANT }, { subdomain: DEFAULT_TENANT }] },
+      select: { prompts: true }
+    });
+    const d = (def?.prompts) || {};
+    out.system ||= d.system || '';
+    out.policy ||= d.policy || '';
+    out.voice  ||= d.voice  || '';
+  }
+
+  // 3) Still missing? Fall back to filesystem (legacy)
+  if (!out.system || !out.policy || !out.voice) {
+    const files = await loadPrompts(req.tenant?.subdomain || DEFAULT_TENANT);
+    out.system ||= files.system || '';
+    out.policy ||= files.policy || '';
+    out.voice  ||= files.voice  || '';
+  }
+
+  return out;
+}
+
+
 const { randomUUID } = require('crypto');
 function ensureSid(req, res) {
   let sid = req.cookies?.sid;
@@ -145,7 +180,8 @@ app.use(async (req, res, next) => {
       brandColor: true, brandHover: true, botBg: true, botText: true,
       userBg: true, userText: true, glassBg: true, glassTop: true, blurPx: true,
       headerGlow: true, watermarkUrl: true, fontFamily: true,
-      googleClientId: true, googleClientSecret: true, googleRedirectUri: true, googleTokens: true
+      googleClientId: true, googleClientSecret: true, googleRedirectUri: true, googleTokens: true,
+      prompts: true  
     };
 
     let tenantRow = await prisma.tenant.findFirst({
@@ -382,11 +418,14 @@ app.post('/message', async (req, res) => {
   }
 
   // -------- Normal AI response flow --------
+
+
   try {
     console.log("🧠 Sending to OpenAI:", message);
 
     // Always load prompts (tenant OR default)
-    const { system, policy, voice } = await loadPrompts(req.tenant?.subdomain || DEFAULT_TENANT);
+    const { system, policy, voice } = await loadPromptsDBFirst(req);
+
 
     // Always have at least a minimal system prompt
     const systemPrompt = system || "You are Solomon, the professional AI assistant.";
