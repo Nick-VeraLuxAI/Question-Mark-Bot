@@ -393,16 +393,20 @@ app.post('/message', async (req, res) => {
       console.error("Failed to log lead to admin:", e.message);
     }
 
-    // 📧 Per-tenant SMTP
-    const transporter = nodemailer.createTransport({
-      host: tenant?.smtpHost || "smtp.titan.email",
-      port: tenant?.smtpPort || 465,
-      secure: true,
-      auth: {
-        user: tenant?.smtpUser,
-        pass: tenant?.smtpPass,
-      }
-    });
+    // 📧 Per-tenant SMTP (Gmail-safe)
+  const port = Number(tenant?.smtpPort || 465);
+  const secure = port === 465; // 465 = SSL, 587 = STARTTLS
+  
+  const transporter = nodemailer.createTransport({
+    host: tenant?.smtpHost || "smtp.gmail.com",
+    port,
+    secure,
+    auth: {
+      user: tenant?.smtpUser, // e.g., nick@veralux.ai
+      pass: tenant?.smtpPass  // 16-char Google App Password (no spaces)
+    }
+  });
+
 
     const mailOptions = {
       from: tenant?.emailFrom || tenant?.smtpUser,
