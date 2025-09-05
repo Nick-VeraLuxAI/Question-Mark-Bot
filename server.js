@@ -393,42 +393,47 @@ app.post('/message', async (req, res) => {
       console.error("Failed to log lead to admin:", e.message);
     }
 
-    // 📧 Per-tenant SMTP (Gmail-safe)
-  const port = Number(tenant?.smtpPort || 465);
-  const secure = port === 465; // 465 = SSL, 587 = STARTTLS
-  
-  const transporter = nodemailer.createTransport({
-    host: tenant?.smtpHost || "smtp.gmail.com",
-    port,
-    secure,
-    auth: {
-      user: tenant?.smtpUser, // e.g., nick@veralux.ai
-      pass: tenant?.smtpPass  // 16-char Google App Password (no spaces)
-    }
+// 📧 Per-tenant SMTP (Gmail-safe)
+const port = Number(tenant?.smtpPort ?? 587);    // 587 = STARTTLS, 465 = SSL
+const secure = port === 465;
+
+const transporter = nodemailer.createTransport({
+  host: tenant?.smtpHost || "smtp.gmail.com",
+  port,
+  secure,                       // true for 465, false for 587
+  requireTLS: !secure,          // force STARTTLS when using 587
+  auth: {
+    user: tenant?.smtpUser,     // e.g. 'nick@veralux.ai'
+    pass: tenant?.smtpPass,     // 16-char Google App Password (no spaces)
+  },
+  tls: secure ? undefined : { minVersion: "TLSv1.2" },
+});
+
+// One mailOptions definition only
+const mailOptions = {
+  from: tenant?.emailFrom || tenant?.smtpUser,   // should be the Gmail acct or verified alias
+  to:   tenant?.emailTo   || tenant?.smtpUser,
+  subject: `📥 New Consultation Request (${tenant?.name || tenantId})`,
+  text:
+    "New Lead Captured:\n\n" +
+    `Name: ${name}\nEmail: ${email}\nPhone: ${phone}\n` +
+    `Tags: ${tags.join(', ')}\n\n` +
+    `Original Message: ${text}`,
+};
+
+transporter.sendMail(mailOptions)
+  .then(info => {
+    console.log("✅ Contact info sent via email:", info.response);
+    return Promise.all([
+      logEvent("server", `Captured new lead: ${name}, ${email}, ${phone}`, tenantId),
+      logEvent("ai", "AI replied with: consultation confirmation", tenantId),
+    ]);
+  })
+  .catch(error => {
+    console.error("❌ Email failed to send:", error);
+    return logError("Email", `Email failed: ${error.message}`, tenantId);
   });
 
-
-    const mailOptions = {
-      from: tenant?.emailFrom || tenant?.smtpUser,
-      to: tenant?.emailTo || "default@yourdomain.com",
-      subject: `📥 New Consultation Request (${tenant?.name || "Unknown Tenant"})`,
-      text:
-        "New Lead Captured:\n\n" +
-        `Name: ${name}\nEmail: ${email}\nPhone: ${phone}\n` +
-        `Tags: ${tags.join(', ')}\n\n` +
-        `Original Message: ${text}`
-    };
-
-    transporter.sendMail(mailOptions, async (error, info) => {
-      if (error) {
-        console.error("❌ Email failed to send:", error);
-        await logError("Email", `Email failed: ${error.message}`, tenantId);
-      } else {
-        console.log("✅ Contact info sent via email:", info.response);
-        await logEvent("server", `Captured new lead: ${name}, ${email}, ${phone}`, tenantId);
-        await logEvent("ai", "AI replied with: consultation confirmation", tenantId);
-      }
-    });
 
     return res.json({
       reply: "Thanks, I've submitted your information to our team! We'll reach out shortly to schedule your consultation."
