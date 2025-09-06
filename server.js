@@ -51,6 +51,7 @@ function materializeTenantSecrets(t) {
 
 
 
+
 // ---------- Tenant resolver (header → query → subdomain → DEFAULT_TENANT) ----------
 function resolveTenantSlug(req) {
   const sanitize = s => String(s || "").toLowerCase().replace(/[^a-z0-9_-]/g, "");
@@ -393,21 +394,32 @@ app.post('/message', async (req, res) => {
       console.error("Failed to log lead to admin:", e.message);
     }
 
-// 📧 Per-tenant SMTP (Gmail-safe)
-const port = Number(tenant?.smtpPort ?? 587);    // 587 = STARTTLS, 465 = SSL
-const secure = port === 465;
+
+// 📧 Per-tenant SMTP (Titan / generic)
+const port = Number(tenant?.smtpPort ?? 587);   // Titan: 587 STARTTLS
+const secure = port === 465;                    // 465 = SSL
 
 const transporter = nodemailer.createTransport({
-  host: tenant?.smtpHost || "smtp.gmail.com",
+  host: tenant?.smtpHost || "smtp.titan.email",
   port,
-  secure,                       // true for 465, false for 587
-  requireTLS: !secure,          // force STARTTLS when using 587
+  secure,                          // true for 465, false for 587
+  requireTLS: !secure,             // force STARTTLS when using 587
   auth: {
-    user: tenant?.smtpUser,     // e.g. 'nick@veralux.ai'
-    pass: tenant?.smtpPass,     // 16-char Google App Password (no spaces)
+    user: tenant?.smtpUser,        // 'nick@veralux.ai'
+    pass: tenant?.smtpPass,        // Titan mailbox password (can include symbols)
   },
   tls: secure ? undefined : { minVersion: "TLSv1.2" },
 });
+
+// (optional) log once so you can confirm no more gmail host in logs
+console.log("SMTP cfg =>", {
+  host: tenant?.smtpHost || "smtp.titan.email",
+  port,
+  secure,
+  user: tenant?.smtpUser,
+  passLen: (tenant?.smtpPass || "").length
+});
+
 
 // One mailOptions definition only
 const mailOptions = {
@@ -652,6 +664,4 @@ const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`✅ Solomon backend running on port ${PORT}`);
 });
-
-
 
