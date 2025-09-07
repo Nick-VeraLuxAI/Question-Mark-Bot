@@ -4,9 +4,14 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Solomon</title>
-
-  <!-- Server-generated tenant CSS -->
-  <link id="env-css" rel="stylesheet" href="/env.css?v=1.0.1">
+<!-- Server-generated tenant CSS (no flash) -->
+<script>
+  const t = new URLSearchParams(location.search).get('tenant');
+  document.write(
+    `<link id="env-css" rel="stylesheet" href="/env.css${t?`?tenant=${encodeURIComponent(t)}`:''}&v=1.0.1">`
+  );
+</script>
+<noscript><link id="env-css" rel="stylesheet" href="/env.css?v=1.0.1"></noscript>
 
   <style>
     :root{
@@ -50,11 +55,14 @@
       position: absolute; inset: 0;
       top: 50%; left: 50%; transform: translate(-50%, -50%);
       width: 500px; height: 500px;
-      background: var(--watermarkUrl) center center no-repeat;
+      background-image: var(--watermarkUrl);   /* <-- key change */
+      background-repeat: no-repeat;
+      background-position: center center;
       background-size: contain;
-      opacity: 0.25; pointer-events: none; z-index: 0;
+      opacity: 0.18;             /* tune to taste */
+      pointer-events: none;
+      z-index: 0;
     }
-
     .header, .chat-box, .input-row, #typing { position: relative; z-index: 1; }
 
     .header {
