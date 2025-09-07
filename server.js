@@ -596,10 +596,25 @@ const esc = {
   url: (v='') => String(v).replace(/[")\\]/g, m => ({')':'%29','"':'%22','\\':'%5C'}[m])),
 };
 
+const asLen = (v) => {
+  if (v == null || v === '') return undefined;
+  if (typeof v === 'number') return `${v}px`;
+  const s = String(v).trim();
+  // allow px, %, vw, vh, rem, em; otherwise treat as px number
+  return /^-?\d+(\.\d+)?(px|%|vw|vh|rem|em)$/.test(s)
+    ? s
+    : `${parseFloat(s) || 0}px`;
+};
+
+const asOpacity = (v) => {
+  const n = parseFloat(v);
+  return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : undefined;
+};
+
+
 function toCssVars(t = {}) {
   const defaults = {
     font: "'Segoe UI', system-ui, sans-serif",
-    // Neutral → Earth palette
     brand:      '#6B705C',
     brandHover: '#556052',
     glassBg:    'rgba(250,248,244,0.88)',
@@ -611,8 +626,15 @@ function toCssVars(t = {}) {
     userText:   '#FFFFFF',
     borderColor:'#D9D6CE',
     headerGlow: 'radial-gradient(50% 50% at 50% 50%, rgba(107,112,92,0.35) 0%, rgba(107,112,92,0) 70%)',
-    watermarkUrl: 'none'
+
+    // 🔽 sensible defaults for watermark
+    watermarkUrl: 'none',
+    watermarkOpacity: '0.18',
+    watermarkW: '500px',
+    watermarkH: '500px',
+    watermarkSize: 'contain'
   };
+
   const fromTenant = {
     brand: t.brandColor || t.branding?.brand,
     brandHover: t.brandHover || t.branding?.brandHover,
@@ -625,10 +647,21 @@ function toCssVars(t = {}) {
     userText: t.userText,
     headerGlow: t.headerGlow,
     font: t.fontFamily,
-    watermarkUrl: t.watermarkUrl ? `url("${esc.url(t.watermarkUrl)}")` : undefined
+
+    // 🔽 new: pick from branding JSON; fall back to defaults above
+    watermarkUrl: t.watermarkUrl ? `url("${esc.url(t.watermarkUrl)}")` : undefined,
+    watermarkOpacity: asOpacity(t.branding?.watermarkOpacity),
+    watermarkW: asLen(t.branding?.watermarkW),
+    watermarkH: asLen(t.branding?.watermarkH),
+    watermarkSize: t.branding?.watermarkSize
   };
-  return { ...defaults, ...Object.fromEntries(Object.entries(fromTenant).filter(([,v]) => v != null && v !== '')) };
+
+  return {
+    ...defaults,
+    ...Object.fromEntries(Object.entries(fromTenant).filter(([, v]) => v != null && v !== ''))
+  };
 }
+
 
 app.get('/env.css', async (req, res) => {
   try {
