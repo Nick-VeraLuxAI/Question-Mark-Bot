@@ -49,19 +49,26 @@
     }
 
     /* ✅ Watermark */
-    .container::before {
-      content: "";
-      position: absolute; inset: 0;
-      top: 50%; left: 50%; transform: translate(-50%, -50%);
-      width: 500px; height: 500px;
-      background-image: var(--watermarkUrl);   /* <-- key change */
-      background-repeat: no-repeat;
-      background-position: center center;
-      background-size: contain;
-      opacity: 0.18;             /* tune to taste */
-      pointer-events: none;
-      z-index: 0;
-    }
+.container::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  /* either center with translate… */
+  top: 50%; left: 50%; transform: translate(-50%, -50%);
+  /* or simpler: margin:auto (pick one style) */
+  /* margin: auto; */
+
+  width: var(--watermarkW, 500px);
+  height: var(--watermarkH, 500px);
+  background-image: var(--watermarkUrl);
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: var(--watermarkSize, contain);
+  opacity: var(--watermarkOpacity, 0.18);
+  pointer-events: none;
+  z-index: 0;
+}
+
     .header, .chat-box, .input-row, #typing { position: relative; z-index: 1; }
 
     .header {
