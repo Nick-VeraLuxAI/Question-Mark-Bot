@@ -693,7 +693,7 @@ app.get('/env.css', async (req, res) => {
 
 
 // ----------------- Server startup -----------------
-const PORT = process.env.PORT || 10000;
+const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
   console.log(`✅ Solomon backend running on port ${PORT}`);
 });
