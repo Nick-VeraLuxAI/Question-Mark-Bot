@@ -3,9 +3,17 @@ const axios = require("axios");
 const { PrismaClient } = require("@prisma/client");
 const prisma = new PrismaClient();
 
-const rawAdminUrl = process.env.ADMIN_URL || "http://127.0.0.1:4000";
-const ADMIN_URL = rawAdminUrl.replace(/\/+$/, ""); // strip trailing slashes
+// Where the Admin intake is listening (strip trailing /)
+const rawAdminUrl = process.env.ADMIN_URL || "http://127.0.0.1:10010";
+const ADMIN_URL = rawAdminUrl.replace(/\/+$/, "");
 const ADMIN_KEY = process.env.ADMIN_CUSTOMER_KEY || process.env.ADMIN_KEY || "";
+
+// Write mode:
+//   'admin'  -> only the Admin intake writes to DB (recommended)
+//   'bot'    -> only this service writes to DB
+//   'both'   -> both write (NOT recommended; duplicates)
+const WRITE_MODE = (process.env.LOG_WRITE_MODE || "admin").toLowerCase();
+const shouldWriteLocal = () => WRITE_MODE !== "admin";
 
 let warnedNoKey = false;
 
@@ -13,7 +21,7 @@ function hdrs(tenantId) {
   if (!tenantId) throw new Error("Tenant ID required for headers");
   const h = { "Content-Type": "application/json", "X-Tenant": tenantId };
   if (ADMIN_KEY) {
-    h["x-customer-key"] = ADMIN_KEY; // matches admin intake gate
+    h["x-customer-key"] = ADMIN_KEY;
   } else if (!warnedNoKey) {
     warnedNoKey = true;
     console.warn("⚠️ ADMIN_KEY/ADMIN_CUSTOMER_KEY not set; admin intake may 401.");
@@ -27,7 +35,6 @@ async function postLog(body, tenantId) {
     await axios.post(`${ADMIN_URL}/api/portal/log`, body, { headers, timeout: 4000 });
     return true;
   } catch (err) {
-    // light retry on network-ish errors/timeouts
     const retriable = err.code === "ECONNABORTED" || !err.response;
     if (retriable) {
       try {
@@ -46,15 +53,21 @@ async function postLog(body, tenantId) {
 // ---------------- Loggers ----------------
 async function logEvent(role, message, tenantId) {
   await postLog({ type: "event", role, message }, tenantId);
+  if (!shouldWriteLocal()) return;
   try {
-    await prisma.event.create({ data: { tenantId, type: String(role || "info"), content: String(message || "") } });
+    await prisma.event.create({
+      data: { tenantId, type: String(role || "info"), content: String(message || "") }
+    });
   } catch (err) { console.error("DB logEvent failed:", err.message); }
 }
 
 async function logError(user, message, tenantId) {
   await postLog({ type: "error", user, message }, tenantId);
+  if (!shouldWriteLocal()) return;
   try {
-    await prisma.event.create({ data: { tenantId, type: `error:${user}`, content: String(message || "") } });
+    await prisma.event.create({
+      data: { tenantId, type: `error:${user}`, content: String(message || "") }
+    });
   } catch (err) { console.error("DB logError failed:", err.message); }
 }
 
@@ -70,7 +83,7 @@ async function logUsage(data, tenantId) {
   const cost              = (typeof data.costUSD === "number" ? data.costUSD : data.cost) ?? 0;
   const breakdown         = data.breakdown ?? null;
 
-  // fire-and-forget to admin portal (with light retry inside postLog)
+  // Send to Admin (single writer)
   await postLog({
     type: "usage",
     usage: {
@@ -83,7 +96,9 @@ async function logUsage(data, tenantId) {
     }
   }, tenantId);
 
-  // persist locally
+  // Local write only if WRITE_MODE != 'admin'
+  if (!shouldWriteLocal()) return;
+
   try {
     await prisma.usage.create({
       data: {
@@ -103,13 +118,17 @@ async function logUsage(data, tenantId) {
 
 async function logMetric(type, value, tenantId) {
   await postLog({ type: "metric", metricType: type, value }, tenantId);
+  if (!shouldWriteLocal()) return;
   try {
-    await prisma.metric.create({ data: { tenantId, name: String(type || "custom"), value: Number(value) || 0 } });
+    await prisma.metric.create({
+      data: { tenantId, name: String(type || "custom"), value: Number(value) || 0 }
+    });
   } catch (err) { console.error("DB logMetric failed:", err.message); }
 }
 
 async function logLead({ name, email, phone, snippet = "", tags = [] }, tenantId) {
   await postLog({ type: "lead", name, email, phone, snippet, tags }, tenantId);
+  if (!shouldWriteLocal()) return;
   try {
     await prisma.lead.create({
       data: {
@@ -125,11 +144,13 @@ async function logLead({ name, email, phone, snippet = "", tags = [] }, tenantId
 }
 
 async function logConversation(sessionId, data, tenantId) {
-  // still mirror to the Admin portal
+  // Mirror to Admin; Admin will write conversation + messages
   await postLog({ type: "conversation", sessionId, data }, tenantId);
 
+  // To avoid any chance of duplication, skip local upsert in admin mode.
+  if (!shouldWriteLocal()) return;
+
   try {
-    // ensure the conversation row exists (no message writes here)
     await prisma.conversation.upsert({
       where: { tenantId_sessionId: { tenantId, sessionId } },
       update: {},
@@ -154,4 +175,3 @@ module.exports = {
   logLatency,
   logSuccess,
 };
-
