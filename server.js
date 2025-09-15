@@ -453,19 +453,13 @@ transporter.sendMail(mailOptions)
   }
 
   // -------- Normal AI response flow --------
-
-
   try {
     console.log("🧠 Sending to OpenAI:", message);
 
     // Always load prompts (tenant OR default)
     const { system, policy, voice } = await loadPromptsDBFirst(req);
-
-
-    // Always have at least a minimal system prompt
     const systemPrompt = system || "You are Solomon, the professional AI assistant.";
 
-    // Build chat messages
     const messages = [
       { role: "system", content: systemPrompt },
       ...(policy ? [{ role: "system", content: `Tenant Policy (${tenant?.name || tenantId}):\n${policy}` }] : []),
@@ -473,10 +467,7 @@ transporter.sendMail(mailOptions)
       { role: "user", content: text }
     ];
 
-    // ✅ Use per-tenant OpenAI key
-    const openai = new OpenAI({
-      apiKey: tenant?.openaiKey || process.env.OPENAI_API_KEY,
-    });
+    const openai = new OpenAI({ apiKey: tenant?.openaiKey || process.env.OPENAI_API_KEY });
 
     const start = Date.now();
     const aiResponse = await openai.chat.completions.create({
@@ -486,21 +477,25 @@ transporter.sendMail(mailOptions)
     const latency = Date.now() - start;
     await logMetric("latency", latency, tenantId);
 
-    let costs = null;
-    if (aiResponse.usage) {
-      const { prompt_tokens, completion_tokens, cached_tokens = 0 } = aiResponse.usage;
-      costs = calculateCost(aiResponse.model || "gpt-4o-mini", prompt_tokens, completion_tokens, cached_tokens);
+    // ✅ Normalize model & map tokens to camelCase for DB
+    const modelKey = (aiResponse.model || "gpt-4o-mini").toLowerCase();
+    const usage = aiResponse.usage || {};
+    const promptTokens     = usage.prompt_tokens     ?? 0;
+    const completionTokens = usage.completion_tokens ?? 0;
+    const cachedTokens     = usage.cached_tokens     ?? 0;
 
-      await logUsage({
-        model: aiResponse.model || "gpt-4o-mini",
-        prompt_tokens,
-        completion_tokens,
-        cached_tokens,
-        user: tenantId,
-        costUSD: costs.total,
-        breakdown: costs
-      }, tenantId);
-    }
+    // ✅ Price with your new pricing.js
+    const costs = calculateCost(modelKey, promptTokens, completionTokens, cachedTokens);
+
+    // ✅ Persist usage in the shape your Prisma schema expects
+    await logUsage({
+      model: modelKey,
+      promptTokens,
+      completionTokens,
+      cachedTokens,
+      cost: costs.total,
+      breakdown: costs
+    }, tenantId);
 
     const reply =
       aiResponse.choices?.[0]?.message?.content ||
@@ -510,8 +505,8 @@ transporter.sendMail(mailOptions)
     await logConversation(sessionId, {
       userMessage: message,
       aiReply: reply,
-      tokens: aiResponse.usage || {},
-      cost: costs?.total || 0
+      tokens: { promptTokens, completionTokens, cachedTokens },
+      cost: costs.total
     }, tenantId);
 
     res.json({ reply });
@@ -525,8 +520,6 @@ transporter.sendMail(mailOptions)
     res.status(500).json({ reply: "⚠️ Sorry, Solomon had trouble processing your request. Please try again shortly." });
   }
 });
-
-
 
 // ----------------- Google Drive OAuth -----------------
 function getOAuthClient(tenant) {
