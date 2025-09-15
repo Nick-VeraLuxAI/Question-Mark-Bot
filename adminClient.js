@@ -58,38 +58,47 @@ async function logError(user, message, tenantId) {
   } catch (err) { console.error("DB logError failed:", err.message); }
 }
 
-async function logUsage(
-  { model, prompt_tokens, completion_tokens, cached_tokens, user, costUSD, cost, breakdown },
-  tenantId
-) {
-  const charge = (typeof costUSD === "number" ? costUSD : cost) || 0;
+async function logUsage(data, tenantId) {
+  // accept both shapes
+  const modelRaw          = data.model || "";
+  const model             = String(modelRaw).toLowerCase();
 
+  const promptTokens      = data.promptTokens     ?? data.prompt_tokens     ?? 0;
+  const completionTokens  = data.completionTokens ?? data.completion_tokens ?? 0;
+  const cachedTokens      = data.cachedTokens     ?? data.cached_tokens     ?? 0;
+
+  const cost              = (typeof data.costUSD === "number" ? data.costUSD : data.cost) ?? 0;
+  const breakdown         = data.breakdown ?? null;
+
+  // fire-and-forget to admin portal (with light retry inside postLog)
   await postLog({
     type: "usage",
     usage: {
       model,
-      prompt_tokens,
-      completion_tokens,
-      cached_tokens,
-      user,
-      costUSD: charge,
+      prompt_tokens: promptTokens,
+      completion_tokens: completionTokens,
+      cached_tokens: cachedTokens,
+      costUSD: cost,
       breakdown
     }
   }, tenantId);
 
+  // persist locally
   try {
     await prisma.usage.create({
       data: {
         tenantId,
-        model: String(model || ""),
-        promptTokens: prompt_tokens || 0,
-        completionTokens: completion_tokens || 0,
-        cachedTokens: cached_tokens || 0,
-        cost: charge,
+        model,
+        promptTokens,
+        completionTokens,
+        cachedTokens,
+        cost: Number(cost) || 0,
         breakdown: breakdown ?? undefined
       }
     });
-  } catch (err) { console.error("DB logUsage failed:", err.message); }
+  } catch (err) {
+    console.error("DB logUsage failed:", err.message);
+  }
 }
 
 async function logMetric(type, value, tenantId) {
@@ -116,22 +125,19 @@ async function logLead({ name, email, phone, snippet = "", tags = [] }, tenantId
 }
 
 async function logConversation(sessionId, data, tenantId) {
+  // still mirror to the Admin portal
   await postLog({ type: "conversation", sessionId, data }, tenantId);
 
   try {
-    const convo = await prisma.conversation.upsert({
+    // ensure the conversation row exists (no message writes here)
+    await prisma.conversation.upsert({
       where: { tenantId_sessionId: { tenantId, sessionId } },
       update: {},
       create: { tenantId, sessionId }
     });
-
-    if (data.userMessage) {
-      await prisma.message.create({ data: { conversationId: convo.id, role: "user",      content: String(data.userMessage || "") } });
-    }
-    if (data.aiReply) {
-      await prisma.message.create({ data: { conversationId: convo.id, role: "assistant", content: String(data.aiReply || "") } });
-    }
-  } catch (err) { console.error("DB logConversation failed:", err.message); }
+  } catch (err) {
+    console.error("DB logConversation failed:", err.message);
+  }
 }
 
 // Convenience wrappers
@@ -148,3 +154,4 @@ module.exports = {
   logLatency,
   logSuccess,
 };
+
