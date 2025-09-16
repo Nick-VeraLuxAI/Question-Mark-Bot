@@ -115,8 +115,11 @@ const {
   logUsage,
   logMetric,
   logConversation,
-  logLead
+  logLead,
+  logLatency,
+  logSuccess
 } = require('./adminClient');
+
 
 const { calculateCost } = require('./pricing');
 
