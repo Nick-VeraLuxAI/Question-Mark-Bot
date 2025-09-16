@@ -688,11 +688,17 @@ app.get('/env.css', async (req, res) => {
   }
 });
 
+if (process.env.ENABLE_HEARTBEAT === '1') {
+  const TENANT = process.env.DEFAULT_TENANT || 'default';
+  setInterval(() => {
+    logSuccess(TENANT).catch(() => {});
+  }, 5 * 60 * 1000); // every 5 minutes
+}
+
 
 // ----------------- Server startup -----------------
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
   console.log(`✅ Solomon backend running on port ${PORT}`);
 });
-
 
