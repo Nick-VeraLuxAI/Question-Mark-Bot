@@ -433,19 +433,19 @@ const mailOptions = {
     `Original Message: ${text}`,
 };
 
-transporter.sendMail(mailOptions)
-  .then(info => {
-    console.log("✅ Contact info sent via email:", info.response);
-    return Promise.all([
-      logEvent("server", `Captured new lead: ${name}, ${email}, ${phone}`, tenantId),
-      logEvent("ai", "AI replied with: consultation confirmation", tenantId),
-    ]);
-  })
-  .catch(error => {
-    console.error("❌ Email failed to send:", error);
-    return logError("Email", `Email failed: ${error.message}`, tenantId);
-  });
-
+    transporter.sendMail(mailOptions)
+      .then(info => {
+        console.log("✅ Contact info sent via email:", info.response);
+        return Promise.all([
+          logSuccess(tenantId), // ← mark a successful request for the status widget
+          logEvent("server", `Captured new lead: ${name}, ${email}, ${phone}`, tenantId),
+          logEvent("ai", "AI replied with: consultation confirmation", tenantId),
+        ]);
+      })
+      .catch(error => {
+        console.error("❌ Email failed to send:", error);
+        return logError("Email", `Email failed: ${error.message}`, tenantId);
+      });
 
     return res.json({
       reply: "Thanks, I've submitted your information to our team! We'll reach out shortly to schedule your consultation."
@@ -476,6 +476,7 @@ transporter.sendMail(mailOptions)
     });
     const latency = Date.now() - start;
     await logMetric("latency", latency, tenantId);
+    await logSuccess(tenantId);
 
     // ✅ Normalize model & map tokens to camelCase for DB
     const modelKey = (aiResponse.model || "gpt-4o-mini").toLowerCase();
@@ -690,4 +691,5 @@ const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
   console.log(`✅ Solomon backend running on port ${PORT}`);
 });
+
 
