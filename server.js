@@ -11,6 +11,7 @@ const cors = require('cors');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 const { encrypt, decrypt, isEncrypted, hasKey } = require('./utils/kms');
+const { platformSSOMiddleware } = require('./middleware/platformSSO');
 const PROMPTS_DIR = process.env.PROMPTS_DIR || "prompts/tenants";
 const DEFAULT_TENANT = (process.env.DEFAULT_TENANT || "default").toLowerCase();
 const HOT = process.env.HOT_RELOAD_PROMPTS === "1";
@@ -52,9 +53,12 @@ function materializeTenantSecrets(t) {
 
 
 
-// ---------- Tenant resolver (header → query → subdomain → DEFAULT_TENANT) ----------
+// ---------- Tenant resolver (SSO → header → query → subdomain → DEFAULT_TENANT) ----------
 function resolveTenantSlug(req) {
   const sanitize = s => String(s || "").toLowerCase().replace(/[^a-z0-9_-]/g, "");
+
+  // Platform SSO override (set by platformSSOMiddleware)
+  if (req.tenantSlugOverride) return sanitize(req.tenantSlugOverride);
 
   const fromHeader = sanitize(req.headers["x-tenant"]);
   if (fromHeader) return fromHeader;
@@ -128,7 +132,7 @@ app.disable("x-powered-by"); // hide Express header
 app.set("trust proxy", 1);   // needed on Render/Railway/Heroku for correct IP/proto
 
 app.use(cors());
-app.use(express.json()); // same behavior for JSON bodies
+app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
 // --- Session persistence (tenant_id + session_id) ---
@@ -136,6 +140,9 @@ app.use(cookieParser());
 
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
+
+// Platform SSO — verify platform JWTs and map to local tenant
+app.use(platformSSOMiddleware(prisma));
 
 // ---------- DB-first prompts loader with fallback to DEFAULT + files ----------
 async function loadPromptsDBFirst(req) {
@@ -577,6 +584,112 @@ app.get('/api/oauth2callback', loadTenant, async (req, res) => {
 });
 
 
+
+// ---- Platform Integration API ----
+
+// Health check (used by platform to verify Solomon is reachable)
+app.get('/api/health', (_req, res) => {
+  res.json({ status: 'ok', product: 'solomon', version: '1.0.0' });
+});
+
+// GET /api/config — tenant config for portal (requires platform SSO)
+app.get('/api/config', loadTenant, (req, res) => {
+  if (!req.platformUser) {
+    return res.status(401).json({ error: 'Platform authentication required' });
+  }
+
+  const t = req.tenant;
+  if (!t) return res.status(404).json({ error: 'Tenant not found' });
+
+  res.json({
+    tenantId: t.id,
+    name: t.name,
+    subdomain: t.subdomain,
+    hasOpenAIKey: !!t.openaiKey,
+    hasSmtpConfig: !!(t.smtpHost && t.smtpUser),
+    hasGoogleOAuth: !!t.googleClientId,
+    branding: {
+      brandColor: t.brandColor,
+      brandHover: t.brandHover,
+      fontFamily: t.fontFamily,
+      watermarkUrl: t.watermarkUrl,
+    },
+  });
+});
+
+// GET /api/stats — aggregate stats for portal dashboard (requires platform SSO)
+app.get('/api/stats', loadTenant, async (req, res) => {
+  if (!req.platformUser) {
+    return res.status(401).json({ error: 'Platform authentication required' });
+  }
+
+  const tenantId = req.tenantId;
+  try {
+    const [conversations, leads, messages, recentUsage] = await Promise.all([
+      prisma.conversation.count({ where: { tenantId } }),
+      prisma.lead.count({ where: { tenantId } }),
+      prisma.message.count({
+        where: { conversation: { tenantId } },
+      }),
+      prisma.usage.aggregate({
+        where: {
+          tenantId,
+          createdAt: { gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) },
+        },
+        _sum: { promptTokens: true, completionTokens: true, cost: true },
+        _count: true,
+      }),
+    ]);
+
+    res.json({
+      conversations,
+      leads,
+      messages,
+      usage30d: {
+        requests: recentUsage._count,
+        promptTokens: recentUsage._sum.promptTokens ?? 0,
+        completionTokens: recentUsage._sum.completionTokens ?? 0,
+        cost: recentUsage._sum.cost ?? 0,
+      },
+    });
+  } catch (err) {
+    console.error('Stats fetch failed:', err);
+    res.status(500).json({ error: 'Failed to fetch stats' });
+  }
+});
+
+// ---- SSO Callback (Platform portal → Solomon) ----
+app.get('/sso/callback', async (req, res) => {
+  const token = req.query.token;
+  if (!token) {
+    return res.status(400).send('Missing SSO token');
+  }
+
+  try {
+    const { verifyPlatformToken } = require('./middleware/platformSSO');
+    const result = await verifyPlatformToken(token);
+
+    if (!result.valid || !result.tenant) {
+      return res.status(401).send('Invalid or expired SSO token');
+    }
+
+    // Set the platform token as a cookie so subsequent requests are authenticated
+    res.cookie('platform_token', token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 4 * 60 * 1000, // 4 minutes (token is 5 min, gives buffer)
+      path: '/',
+    });
+
+    // Redirect to the main app with the tenant context
+    const slug = result.tenant?.slug || '';
+    res.redirect(`/?tenant=${encodeURIComponent(slug)}`);
+  } catch (err) {
+    console.error('[SSO callback] Error:', err);
+    res.status(500).send('SSO authentication failed');
+  }
+});
 
 // ----------------- Static pages -----------------
 app.get('/', (req, res) => {
