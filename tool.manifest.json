@@ -1,0 +1,43 @@
+{
+  "id": "question-mark-bot",
+  "name": "Solomon Backend",
+  "version": "1.0.0",
+  "category": "general",
+  "description": "Imported from GitHub: Question-Mark-Bot",
+  "api": {
+    "basePath": "http://localhost:10000",
+    "healthEndpoint": "/api/health",
+    "capabilities": [
+      "express",
+      "javascript",
+      "api"
+    ]
+  },
+  "adminUi": {
+    "routePath": "/question-mark-bot",
+    "displayGroup": "Imported"
+  },
+  "analytics": {
+    "enabled": true,
+    "platformEndpoint": "/api/tools/question-mark-bot/analytics",
+    "icon": "FiServer",
+    "sidebarMeta": "Tool"
+  },
+  "portal": {
+    "displayName": "Solomon Backend",
+    "tagline": "Solomon Backend tool",
+    "icon": "FiServer",
+    "accentColor": "#C9A04E",
+    "launchType": "web",
+    "productionUrl": "http://localhost:10000",
+    "devUrl": "http://localhost:10000",
+    "slugAliases": [
+      "question-mark-bot"
+    ],
+    "features": [
+      "express",
+      "javascript",
+      "api"
+    ]
+  }
+}
