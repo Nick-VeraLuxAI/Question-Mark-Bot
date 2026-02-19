@@ -1,201 +1,216 @@
-                                 Apache License
-                           Version 2.0, January 2004
-                        http://www.apache.org/licenses/
+VERALUX PLATFORM — PROPRIETARY SOFTWARE LICENSE AGREEMENT
 
-   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+Copyright (c) 2025–2026 Nick DeSantis / VeraLux AI. All rights reserved.
 
-   1. Definitions.
+IMPORTANT — READ CAREFULLY: This Proprietary Software License Agreement
+("Agreement") is a legally binding contract between you (whether an individual
+or a single entity, hereinafter "Licensee") and Nick DeSantis / VeraLux AI
+(hereinafter "Licensor") governing the use of the VeraLux Platform software,
+including all source code, object code, documentation, assets, configurations,
+databases schemas, user-interface designs, APIs, and any associated materials
+(collectively, the "Software").
 
-      "License" shall mean the terms and conditions for use, reproduction,
-      and distribution as defined by Sections 1 through 9 of this document.
+By accessing, downloading, copying, installing, or otherwise using the
+Software, you acknowledge that you have read, understood, and agree to be
+bound by the terms and conditions of this Agreement. If you do not agree to
+these terms, you must immediately cease all use of the Software and destroy
+any copies in your possession.
 
-      "Licensor" shall mean the copyright owner or entity authorized by
-      the copyright owner that is granting the License.
+────────────────────────────────────────────────────────────────────────────────
 
-      "Legal Entity" shall mean the union of the acting entity and all
-      other entities that control, are controlled by, or are under common
-      control with that entity. For the purposes of this definition,
-      "control" means (i) the power, direct or indirect, to cause the
-      direction or management of such entity, whether by contract or
-      otherwise, or (ii) ownership of fifty percent (50%) or more of the
-      outstanding shares, or (iii) beneficial ownership of such entity.
+1. GRANT OF LICENSE
 
-      "You" (or "Your") shall mean an individual or Legal Entity
-      exercising permissions granted by this License.
+   1.1  No license, right, or interest in the Software is granted to any
+        party except as expressly set forth in a separate written agreement
+        signed by the Licensor.
 
-      "Source" form shall mean the preferred form for making modifications,
-      including but not limited to software source code, documentation
-      source, and configuration files.
+   1.2  The Licensor retains sole and exclusive ownership of all intellectual
+        property rights in and to the Software, including but not limited to
+        patents, copyrights, trade secrets, trademarks, and any other
+        proprietary rights.
 
-      "Object" form shall mean any form resulting from mechanical
-      transformation or translation of a Source form, including but
-      not limited to compiled object code, generated documentation,
-      and conversions to other media types.
+   1.3  Nothing in this Agreement shall be construed as granting, by
+        implication, estoppel, or otherwise, any license or right to use the
+        Software beyond what is explicitly authorized in writing by the
+        Licensor.
 
-      "Work" shall mean the work of authorship, whether in Source or
-      Object form, made available under the License, as indicated by a
-      copyright notice that is included in or attached to the work
-      (an example is provided in the Appendix below).
+2. RESTRICTIONS
 
-      "Derivative Works" shall mean any work, whether in Source or Object
-      form, that is based on (or derived from) the Work and for which the
-      editorial revisions, annotations, elaborations, or other modifications
-      represent, as a whole, an original work of authorship. For the purposes
-      of this License, Derivative Works shall not include works that remain
-      separable from, or merely link (or bind by name) to the interfaces of,
-      the Work and Derivative Works thereof.
+   Unless the Licensor has provided prior express written consent, the
+   Licensee shall NOT:
 
-      "Contribution" shall mean any work of authorship, including
-      the original version of the Work and any modifications or additions
-      to that Work or Derivative Works thereof, that is intentionally
-      submitted to Licensor for inclusion in the Work by the copyright owner
-      or by an individual or Legal Entity authorized to submit on behalf of
-      the copyright owner. For the purposes of this definition, "submitted"
-      means any form of electronic, verbal, or written communication sent
-      to the Licensor or its representatives, including but not limited to
-      communication on electronic mailing lists, source code control systems,
-      and issue tracking systems that are managed by, or on behalf of, the
-      Licensor for the purpose of discussing and improving the Work, but
-      excluding communication that is conspicuously marked or otherwise
-      designated in writing by the copyright owner as "Not a Contribution."
+   (a)  Use, execute, or deploy the Software, in whole or in part, for any
+        purpose whatsoever, including but not limited to personal, internal,
+        commercial, educational, research, or evaluation purposes;
 
-      "Contributor" shall mean Licensor and any individual or Legal Entity
-      on behalf of whom a Contribution has been received by Licensor and
-      subsequently incorporated within the Work.
+   (b)  Copy, reproduce, duplicate, or create backups of the Software except
+        as strictly required for authorized use under a separate written
+        agreement;
 
-   2. Grant of Copyright License. Subject to the terms and conditions of
-      this License, each Contributor hereby grants to You a perpetual,
-      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
-      copyright license to reproduce, prepare Derivative Works of,
-      publicly display, publicly perform, sublicense, and distribute the
-      Work and such Derivative Works in Source or Object form.
+   (c)  Modify, adapt, translate, reverse-engineer, decompile, disassemble,
+        or create derivative works based on the Software;
 
-   3. Grant of Patent License. Subject to the terms and conditions of
-      this License, each Contributor hereby grants to You a perpetual,
-      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
-      (except as stated in this section) patent license to make, have made,
-      use, offer to sell, sell, import, and otherwise transfer the Work,
-      where such license applies only to those patent claims licensable
-      by such Contributor that are necessarily infringed by their
-      Contribution(s) alone or by combination of their Contribution(s)
-      with the Work to which such Contribution(s) was submitted. If You
-      institute patent litigation against any entity (including a
-      cross-claim or counterclaim in a lawsuit) alleging that the Work
-      or a Contribution incorporated within the Work constitutes direct
-      or contributory patent infringement, then any patent licenses
-      granted to You under this License for that Work shall terminate
-      as of the date such litigation is filed.
+   (d)  Distribute, sublicense, lease, rent, lend, sell, resell, transfer,
+        assign, or otherwise make the Software available to any third party;
 
-   4. Redistribution. You may reproduce and distribute copies of the
-      Work or Derivative Works thereof in any medium, with or without
-      modifications, and in Source or Object form, provided that You
-      meet the following conditions:
+   (e)  Publish, display, broadcast, or otherwise make the Software or any
+        portion thereof publicly accessible;
 
-      (a) You must give any other recipients of the Work or
-          Derivative Works a copy of this License; and
+   (f)  Remove, alter, obscure, or tamper with any copyright notices,
+        proprietary legends, trademarks, or other identifying marks contained
+        in or on the Software;
 
-      (b) You must cause any modified files to carry prominent notices
-          stating that You changed the files; and
+   (g)  Use the Software to build a competing product, service, or platform;
 
-      (c) You must retain, in the Source form of any Derivative Works
-          that You distribute, all copyright, patent, trademark, and
-          attribution notices from the Source form of the Work,
-          excluding those notices that do not pertain to any part of
-          the Derivative Works; and
+   (h)  Permit any third party to do any of the foregoing.
 
-      (d) If the Work includes a "NOTICE" text file as part of its
-          distribution, then any Derivative Works that You distribute must
-          include a readable copy of the attribution notices contained
-          within such NOTICE file, excluding those notices that do not
-          pertain to any part of the Derivative Works, in at least one
-          of the following places: within a NOTICE text file distributed
-          as part of the Derivative Works; within the Source form or
-          documentation, if provided along with the Derivative Works; or,
-          within a display generated by the Derivative Works, if and
-          wherever such third-party notices normally appear. The contents
-          of the NOTICE file are for informational purposes only and
-          do not modify the License. You may add Your own attribution
-          notices within Derivative Works that You distribute, alongside
-          or as an addendum to the NOTICE text from the Work, provided
-          that such additional attribution notices cannot be construed
-          as modifying the License.
+3. CONFIDENTIALITY
 
-      You may add Your own copyright statement to Your modifications and
-      may provide additional or different license terms and conditions
-      for use, reproduction, or distribution of Your modifications, or
-      for any such Derivative Works as a whole, provided Your use,
-      reproduction, and distribution of the Work otherwise complies with
-      the conditions stated in this License.
+   3.1  The Software, its source code, architecture, algorithms, data
+        structures, documentation, and all related technical information
+        constitute confidential and proprietary trade secrets of the Licensor
+        ("Confidential Information").
 
-   5. Submission of Contributions. Unless You explicitly state otherwise,
-      any Contribution intentionally submitted for inclusion in the Work
-      by You to the Licensor shall be under the terms and conditions of
-      this License, without any additional terms or conditions.
-      Notwithstanding the above, nothing herein shall supersede or modify
-      the terms of any separate license agreement you may have executed
-      with Licensor regarding such Contributions.
+   3.2  The Licensee agrees to hold all Confidential Information in strict
+        confidence, to not disclose it to any third party, and to use it only
+        as expressly permitted under a separate written agreement with the
+        Licensor.
 
-   6. Trademarks. This License does not grant permission to use the trade
-      names, trademarks, service marks, or product names of the Licensor,
-      except as required for reasonable and customary use in describing the
-      origin of the Work and reproducing the content of the NOTICE file.
+   3.3  The obligations of confidentiality shall survive the termination or
+        expiration of this Agreement.
 
-   7. Disclaimer of Warranty. Unless required by applicable law or
-      agreed to in writing, Licensor provides the Work (and each
-      Contributor provides its Contributions) on an "AS IS" BASIS,
-      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
-      implied, including, without limitation, any warranties or conditions
-      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
-      PARTICULAR PURPOSE. You are solely responsible for determining the
-      appropriateness of using or redistributing the Work and assume any
-      risks associated with Your exercise of permissions under this License.
+4. INTELLECTUAL PROPERTY
 
-   8. Limitation of Liability. In no event and under no legal theory,
-      whether in tort (including negligence), contract, or otherwise,
-      unless required by applicable law (such as deliberate and grossly
-      negligent acts) or agreed to in writing, shall any Contributor be
-      liable to You for damages, including any direct, indirect, special,
-      incidental, or consequential damages of any character arising as a
-      result of this License or out of the use or inability to use the
-      Work (including but not limited to damages for loss of goodwill,
-      work stoppage, computer failure or malfunction, or any and all
-      other commercial damages or losses), even if such Contributor
-      has been advised of the possibility of such damages.
+   4.1  All right, title, and interest in and to the Software, including all
+        modifications, enhancements, improvements, and derivative works
+        (whether made by the Licensor, the Licensee, or any third party),
+        shall remain the exclusive property of the Licensor.
 
-   9. Accepting Warranty or Additional Liability. While redistributing
-      the Work or Derivative Works thereof, You may choose to offer,
-      and charge a fee for, acceptance of support, warranty, indemnity,
-      or other liability obligations and/or rights consistent with this
-      License. However, in accepting such obligations, You may act only
-      on Your own behalf and on Your sole responsibility, not on behalf
-      of any other Contributor, and only if You agree to indemnify,
-      defend, and hold each Contributor harmless for any liability
-      incurred by, or claims asserted against, such Contributor by reason
-      of your accepting any such warranty or additional liability.
+   4.2  Any feedback, suggestions, or ideas provided by the Licensee
+        regarding the Software may be freely used by the Licensor without
+        obligation or compensation to the Licensee.
 
-   END OF TERMS AND CONDITIONS
+   4.3  The names "VeraLux," "VeraLux AI," "VeraLux Platform," and all
+        associated logos, marks, and branding are trademarks of the Licensor
+        and may not be used without prior written permission.
 
-   APPENDIX: How to apply the Apache License to your work.
+5. NO WARRANTY
 
-      To apply the Apache License to your work, attach the following
-      boilerplate notice, with the fields enclosed by brackets "[]"
-      replaced with your own identifying information. (Don't include
-      the brackets!)  The text should be enclosed in the appropriate
-      comment syntax for the file format. We also recommend that a
-      file or class name and description of purpose be included on the
-      same "printed page" as the copyright notice for easier
-      identification within third-party archives.
+   THE SOFTWARE IS PROVIDED "AS IS" AND "AS AVAILABLE," WITHOUT WARRANTY OF
+   ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
+   OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE,
+   NON-INFRINGEMENT, AND ACCURACY. THE LICENSOR DOES NOT WARRANT THAT THE
+   SOFTWARE WILL BE UNINTERRUPTED, ERROR-FREE, SECURE, OR FREE OF VIRUSES
+   OR OTHER HARMFUL COMPONENTS. THE ENTIRE RISK ARISING OUT OF THE USE OR
+   PERFORMANCE OF THE SOFTWARE REMAINS WITH THE LICENSEE.
 
-   Copyright [yyyy] [name of copyright owner]
+6. LIMITATION OF LIABILITY
 
-   Licensed under the Apache License, Version 2.0 (the "License");
-   you may not use this file except in compliance with the License.
-   You may obtain a copy of the License at
+   6.1  IN NO EVENT SHALL THE LICENSOR, ITS OFFICERS, DIRECTORS, EMPLOYEES,
+        AGENTS, AFFILIATES, OR SUPPLIERS BE LIABLE FOR ANY INDIRECT,
+        INCIDENTAL, SPECIAL, CONSEQUENTIAL, EXEMPLARY, OR PUNITIVE DAMAGES,
+        INCLUDING BUT NOT LIMITED TO LOSS OF PROFITS, REVENUE, DATA, BUSINESS
+        OPPORTUNITIES, OR GOODWILL, ARISING OUT OF OR IN CONNECTION WITH THIS
+        AGREEMENT OR THE USE OR INABILITY TO USE THE SOFTWARE, EVEN IF THE
+        LICENSOR HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
 
-       http://www.apache.org/licenses/LICENSE-2.0
+   6.2  THE LICENSOR'S TOTAL AGGREGATE LIABILITY UNDER THIS AGREEMENT SHALL
+        NOT EXCEED THE AMOUNTS, IF ANY, ACTUALLY PAID BY THE LICENSEE TO THE
+        LICENSOR FOR USE OF THE SOFTWARE DURING THE TWELVE (12) MONTHS
+        PRECEDING THE EVENT GIVING RISE TO THE CLAIM.
 
-   Unless required by applicable law or agreed to in writing, software
-   distributed under the License is distributed on an "AS IS" BASIS,
-   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-   See the License for the specific language governing permissions and
-   limitations under the License.
+   6.3  THE LIMITATIONS IN THIS SECTION SHALL APPLY TO THE FULLEST EXTENT
+        PERMITTED BY APPLICABLE LAW, REGARDLESS OF THE FORM OF ACTION,
+        WHETHER IN CONTRACT, TORT (INCLUDING NEGLIGENCE), STRICT LIABILITY,
+        OR OTHERWISE.
+
+7. INDEMNIFICATION
+
+   The Licensee agrees to indemnify, defend, and hold harmless the Licensor
+   and its officers, directors, employees, agents, and affiliates from and
+   against any and all claims, liabilities, damages, losses, costs, and
+   expenses (including reasonable attorneys' fees) arising out of or related
+   to the Licensee's unauthorized use of the Software or breach of this
+   Agreement.
+
+8. TERMINATION
+
+   8.1  This Agreement is effective until terminated. The Licensor may
+        terminate this Agreement immediately and without notice if the
+        Licensee breaches any term or condition herein.
+
+   8.2  Upon termination, the Licensee must immediately cease all use of the
+        Software and destroy all copies, installations, and derivative works
+        in the Licensee's possession or control, and certify such destruction
+        in writing to the Licensor upon request.
+
+   8.3  Sections 2, 3, 4, 5, 6, 7, 9, 10, and 11 shall survive termination
+        of this Agreement.
+
+9. GOVERNING LAW AND JURISDICTION
+
+   9.1  This Agreement shall be governed by and construed in accordance with
+        the laws of the State of New York, United States of America, without
+        regard to its conflict-of-law provisions.
+
+   9.2  Any dispute arising under or in connection with this Agreement shall
+        be subject to the exclusive jurisdiction of the state and federal
+        courts located in New York, and the parties irrevocably consent to
+        such jurisdiction and venue.
+
+10. ENFORCEMENT AND REMEDIES
+
+   10.1 The Licensee acknowledges that any unauthorized use, disclosure, or
+        distribution of the Software may cause irreparable harm to the
+        Licensor for which monetary damages would be inadequate.
+
+   10.2 In addition to any other remedies available at law or in equity, the
+        Licensor shall be entitled to seek injunctive or other equitable
+        relief to prevent or restrain any breach or threatened breach of this
+        Agreement, without the necessity of proving actual damages or posting
+        a bond.
+
+11. GENERAL PROVISIONS
+
+   11.1 ENTIRE AGREEMENT. This Agreement constitutes the entire agreement
+        between the parties with respect to the subject matter hereof and
+        supersedes all prior or contemporaneous oral or written
+        communications, proposals, and representations with respect to the
+        Software. Notwithstanding the foregoing, if the Licensee has entered
+        into a separate written license agreement with the Licensor, the
+        terms of that agreement shall govern to the extent of any conflict.
+
+   11.2 AMENDMENTS. This Agreement may not be modified or amended except by a
+        written instrument signed by the Licensor.
+
+   11.3 SEVERABILITY. If any provision of this Agreement is held to be
+        invalid, illegal, or unenforceable, the remaining provisions shall
+        continue in full force and effect.
+
+   11.4 WAIVER. The failure of the Licensor to enforce any right or provision
+        of this Agreement shall not constitute a waiver of such right or
+        provision.
+
+   11.5 ASSIGNMENT. The Licensee may not assign or transfer this Agreement or
+        any rights hereunder without the prior written consent of the
+        Licensor. The Licensor may assign this Agreement freely.
+
+   11.6 NOTICES. All notices required or permitted under this Agreement shall
+        be in writing and delivered to the Licensor at the contact
+        information provided on the official VeraLux AI website or
+        repository.
+
+────────────────────────────────────────────────────────────────────────────────
+
+FOR LICENSING INQUIRIES:
+
+To obtain a license to use the VeraLux Platform, please contact:
+
+   Nick DeSantis
+   VeraLux AI
+   Email: nick@veraluxclients.com
+
+Unauthorized use of this Software is strictly prohibited and may result in
+civil and criminal penalties.
+
+────────────────────────────────────────────────────────────────────────────────
