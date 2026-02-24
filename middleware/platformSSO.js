@@ -54,12 +54,13 @@ async function verifyPlatformToken(token) {
  */
 function platformSSOMiddleware(prisma) {
   return async (req, res, next) => {
+    // Accept either API bearer auth or browser cookie set by /sso/callback.
     const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return next();
-    }
-
-    const token = authHeader.slice(7);
+    const bearerToken = authHeader && authHeader.startsWith("Bearer ")
+      ? authHeader.slice(7)
+      : "";
+    const cookieToken = req.cookies?.platform_token || "";
+    const token = bearerToken || cookieToken;
     if (!token) return next();
 
     const result = await verifyPlatformToken(token);

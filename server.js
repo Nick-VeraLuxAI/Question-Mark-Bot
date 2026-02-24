@@ -128,11 +128,38 @@ const {
 const { calculateCost } = require('./pricing');
 
 const app = express();
+const COOKIE_SECURE = process.env.NODE_ENV === 'production';
+const CORS_ORIGINS = new Set(
+  String(process.env.CORS_ORIGINS || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+);
 app.disable("x-powered-by"); // hide Express header
 app.set("trust proxy", 1);   // needed on Render/Railway/Heroku for correct IP/proto
 
-app.use(cors());
-app.use(express.json());
+app.use(cors({
+  origin(origin, callback) {
+    // Non-browser/server-to-server traffic often has no Origin header.
+    if (!origin) return callback(null, true);
+
+    // In production, require explicit allowlist configuration.
+    if (CORS_ORIGINS.size === 0) {
+      return process.env.NODE_ENV === 'production'
+        ? callback(new Error('CORS origin not allowed'))
+        : callback(null, true);
+    }
+
+    return CORS_ORIGINS.has(origin)
+      ? callback(null, true)
+      : callback(new Error('CORS origin not allowed'));
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Tenant'],
+  maxAge: 600,
+}));
+app.use(express.json({ limit: '16kb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 // --- Session persistence (tenant_id + session_id) ---
@@ -143,6 +170,56 @@ const prisma = new PrismaClient();
 
 // Platform SSO — verify platform JWTs and map to local tenant
 app.use(platformSSOMiddleware(prisma));
+
+function getClientIp(req) {
+  const xff = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+  return xff || req.ip || req.socket?.remoteAddress || 'unknown';
+}
+
+function createRateLimiter({ windowMs, max, keyPrefix }) {
+  const store = new Map();
+
+  setInterval(() => {
+    const now = Date.now();
+    for (const [key, entry] of store.entries()) {
+      if (now >= entry.resetAt) store.delete(key);
+    }
+  }, Math.min(windowMs, 60_000)).unref();
+
+  return (req, res, next) => {
+    const ip = getClientIp(req);
+    const tenant = resolveTenantSlug(req);
+    const key = `${keyPrefix}:${ip}:${tenant}`;
+    const now = Date.now();
+    const current = store.get(key);
+
+    if (!current || now >= current.resetAt) {
+      store.set(key, { count: 1, resetAt: now + windowMs });
+      return next();
+    }
+
+    if (current.count >= max) {
+      const retryAfterSec = Math.max(1, Math.ceil((current.resetAt - now) / 1000));
+      res.set('Retry-After', String(retryAfterSec));
+      return res.status(429).json({ error: 'rate_limit_exceeded' });
+    }
+
+    current.count += 1;
+    return next();
+  };
+}
+
+const messageLimiter = createRateLimiter({
+  windowMs: Number(process.env.MESSAGE_RATE_WINDOW_MS || 60_000),
+  max: Number(process.env.MESSAGE_RATE_MAX || 30),
+  keyPrefix: 'message',
+});
+
+const authLimiter = createRateLimiter({
+  windowMs: Number(process.env.AUTH_RATE_WINDOW_MS || 60_000),
+  max: Number(process.env.AUTH_RATE_MAX || 20),
+  keyPrefix: 'auth',
+});
 
 // ---------- DB-first prompts loader with fallback to DEFAULT + files ----------
 async function loadPromptsDBFirst(req) {
@@ -179,12 +256,18 @@ async function loadPromptsDBFirst(req) {
 }
 
 
-const { randomUUID } = require('crypto');
+const { randomUUID, randomBytes } = require('crypto');
 function ensureSid(req, res) {
   let sid = req.cookies?.sid;
   if (!sid) {
     sid = randomUUID();
-    res.cookie('sid', sid, { httpOnly: true, sameSite: 'Lax', maxAge: 1000*60*60*24*30 });
+    res.cookie('sid', sid, {
+      httpOnly: true,
+      secure: COOKIE_SECURE,
+      sameSite: 'Lax',
+      maxAge: 1000 * 60 * 60 * 24 * 30,
+      path: '/',
+    });
   }
   return sid;
 }
@@ -294,6 +377,13 @@ async function loadTenant(req, res, next) {
   }
 }
 
+function requirePlatformAuth(req, res, next) {
+  if (!req.platformUser) {
+    return res.status(401).json({ error: 'Platform authentication required' });
+  }
+  next();
+}
+
 
 
 // --- Simple fuzzy tagger (no extra AI call) ---
@@ -342,13 +432,17 @@ async function getTagDict(tenantId) {
 async function extractTags(message, tenantId) {
   const TAG_DICT = await getTagDict(tenantId); // fetch from DB per tenant
 
-  const text = normalize(message);
-  const tokens = text.split(" ");
+  const safeMessage = String(message || '').slice(0, 2000);
+  const text = normalize(safeMessage);
+  if (!text) return [];
+  const tokens = text.split(" ").filter(Boolean).slice(0, 220);
   const contains = (needle) => text.includes(normalize(needle));
   const tokenFuzzyHas = (kw) => {
-    const k = normalize(kw);
+    const k = normalize(kw).slice(0, 64);
+    if (!k) return false;
     if (k.includes(" ")) return contains(k);
     for (const t of tokens) {
+      if (t.length > 40) continue;
       if (t === k) return true;
       if (t.length >= 4 && similar(t, k) >= 0.84) return true;
     }
@@ -357,7 +451,8 @@ async function extractTags(message, tenantId) {
 
   const tags = new Set();
   for (const [tag, kws] of Object.entries(TAG_DICT)) {
-    if (kws.some(tokenFuzzyHas)) tags.add(tag);
+    const keywords = Array.isArray(kws) ? kws : [];
+    if (keywords.some(tokenFuzzyHas)) tags.add(tag);
   }
 
   if (tags.has("budget") && (tags.has("flooring") || /floor/.test(text))) {
@@ -368,7 +463,7 @@ async function extractTags(message, tenantId) {
 }
 
 // ----------------- Main chat endpoint -----------------
-app.post('/message', async (req, res) => {
+app.post('/message', messageLimiter, async (req, res) => {
   const { message, source } = req.body;
   const text = (message ?? '').toString();   // <— guard
   const { tenant, tenantId, sessionId } = req; // ✅ provided by middleware
@@ -388,11 +483,19 @@ app.post('/message', async (req, res) => {
 
   console.log('leadCheck', { source, nameLikely, email: !!emailMatch, phone: !!phoneMatch });
 
-  if ((source === "contact" || (emailMatch && phoneMatch && nameLikely))) {
+  const explicitContact = source === "contact";
+  const hasLeadContactData = !!(emailMatch && phoneMatch);
+  if (explicitContact && !hasLeadContactData) {
+    return res.json({
+      reply: "Please include both your email and phone number so our team can follow up."
+    });
+  }
+
+  if (explicitContact || (hasLeadContactData && nameLikely)) {
     const nameMatch = text.match(nameRegex);
     const name = nameMatch ? nameMatch[0] : "N/A";
-    const email = emailMatch[0];
-    const phone = phoneMatch[0];
+    const email = emailMatch?.[0] || "";
+    const phone = phoneMatch?.[0] || "";
 
     const tags = await extractTags(text, tenantId);
     console.log('leadTags', tags);
@@ -546,14 +649,23 @@ function getOAuthClient(tenant) {
 }
 
 // --- Begin per-tenant Google OAuth routes ---
-app.get('/auth', loadTenant, async (req, res) => {
+app.get('/auth', authLimiter, requirePlatformAuth, loadTenant, async (req, res) => {
   try {
     const { tenant } = req; // now defined
     const oauth2Client = getOAuthClient(tenant);
+    const state = randomBytes(24).toString('hex');
+    res.cookie('oauth_state', state, {
+      httpOnly: true,
+      secure: COOKIE_SECURE,
+      sameSite: 'Lax',
+      maxAge: 10 * 60 * 1000,
+      path: '/',
+    });
     const authUrl = oauth2Client.generateAuthUrl({
       access_type: 'offline',
       scope: ['https://www.googleapis.com/auth/drive.file'],
-      redirect_uri: tenant.googleRedirectUri
+      redirect_uri: tenant.googleRedirectUri,
+      state
     });
     res.redirect(authUrl);
   } catch (err) {
@@ -562,9 +674,21 @@ app.get('/auth', loadTenant, async (req, res) => {
   }
 });
 
-app.get('/api/oauth2callback', loadTenant, async (req, res) => {
+app.get('/api/oauth2callback', authLimiter, requirePlatformAuth, loadTenant, async (req, res) => {
   try {
     const code = req.query.code;
+    const state = String(req.query.state || '');
+    const stateCookie = String(req.cookies?.oauth_state || '');
+    if (!state || !stateCookie || state !== stateCookie) {
+      return res.status(401).send("OAuth state verification failed");
+    }
+    res.clearCookie('oauth_state', {
+      httpOnly: true,
+      secure: COOKIE_SECURE,
+      sameSite: 'Lax',
+      path: '/',
+    });
+
     const { tenant, tenantId } = req; // now defined
     const oauth2Client = getOAuthClient(tenant);
     const { tokens } = await oauth2Client.getToken(code);
@@ -590,6 +714,19 @@ app.get('/api/oauth2callback', loadTenant, async (req, res) => {
 // Health check (used by platform to verify Solomon is reachable)
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', product: 'solomon', version: '1.0.0' });
+});
+
+app.get('/api/ready', async (_req, res) => {
+  try {
+    await Promise.race([
+      prisma.$queryRaw`SELECT 1`,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('db_timeout')), 2_000)),
+    ]);
+    res.json({ status: 'ready', product: 'solomon' });
+  } catch (err) {
+    console.error('readiness check failed:', err.message);
+    res.status(503).json({ status: 'not_ready', reason: 'database_unreachable' });
+  }
 });
 
 // GET /api/config — tenant config for portal (requires platform SSO)
@@ -659,7 +796,7 @@ app.get('/api/stats', loadTenant, async (req, res) => {
 });
 
 // ---- SSO Callback (Platform portal → Solomon) ----
-app.get('/sso/callback', async (req, res) => {
+app.get('/sso/callback', authLimiter, async (req, res) => {
   const token = req.query.token;
   if (!token) {
     return res.status(400).send('Missing SSO token');
@@ -676,8 +813,8 @@ app.get('/sso/callback', async (req, res) => {
     // Set the platform token as a cookie so subsequent requests are authenticated
     res.cookie('platform_token', token, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
+      secure: COOKIE_SECURE,
+      sameSite: 'Lax',
       maxAge: 4 * 60 * 1000, // 4 minutes (token is 5 min, gives buffer)
       path: '/',
     });
