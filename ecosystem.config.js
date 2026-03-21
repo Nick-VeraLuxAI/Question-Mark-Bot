@@ -1,11 +1,12 @@
-require("dotenv").config({ path: "/home/ubuntu/Question-Mark-Bot/.env" });
+const path = require("path");
+require("dotenv").config({ path: path.join(__dirname, ".env") });
 
 module.exports = {
   apps: [
     {
       name: "solomon",
       script: "server.js",
-      cwd: "/home/ubuntu/Question-Mark-Bot",
+      cwd: __dirname,
       watch: false,
       env: {
         NODE_ENV: "production",

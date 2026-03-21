@@ -53,6 +53,9 @@ async function main() {
     const path = `/message?tenant=${encodeURIComponent(TENANT)}`;
     const first = await postJson(path, { message: 'smoke test', source: 'contact' });
     assert(first.res.status !== 500, `unexpected 500 from /message: ${first.text}`);
+    if (first.res.status === 200) {
+      assert(typeof first.data?.reply === "string" && first.data.reply.length > 0, "message response missing reply");
+    }
     console.log(`OK  /message first response (${first.res.status})`);
   } else {
     console.log('SKIP /message check (set SMOKE_TENANT to enable)');

@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Solomon</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <noscript><link id="env-css" rel="stylesheet" href="/env.css?v=1.0.1" /></noscript>
+  <link rel="stylesheet" href="/solomon.css?v=2" />
+</head>
+<body>
+  <div class="container">
+    <div class="canvas-root">
+      <div class="header">Solomon</div>
+      <div class="canvas-scroll" id="canvas-scroll">
+        <div class="canvas-column">
+          <div class="intro-canvas" id="intro-card" role="region" aria-label="Welcome">
+            <h1>Hello, I'm Solomon.</h1>
+            <p>What would you like to explore?</p>
+            <div class="intro-actions">
+              <button type="button" class="intro-pill" data-prompt="">Ask a question</button>
+              <button type="button" class="intro-pill" data-prompt="Help me generate content about ">Generate content</button>
+              <button type="button" class="intro-pill" data-prompt="I'd like you to analyze ">Analyze something</button>
+            </div>
+          </div>
+          <div class="chat-box" id="chat-box"></div>
+          <div id="typing">Solomon is thinking…</div>
+        </div>
+      </div>
+      <div class="input-dock">
+        <form id="chat-form" class="input-row" autocomplete="off">
+          <input type="text" id="user-input" placeholder="Ask Solomon anything…" required aria-label="Your message"/>
+          <button type="submit" aria-label="Send message"><span class="send-icon" aria-hidden="true">➤</span></button>
+        </form>
+      </div>
+    </div>
+  </div>
+  <script src="/solomon.js?v=2" defer></script>
+</body>
+</html>

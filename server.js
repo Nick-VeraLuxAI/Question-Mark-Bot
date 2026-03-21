@@ -2,6 +2,7 @@
 const express = require('express');
 const fsp = require("fs").promises;
 const path = require('path');
+const { randomUUID, randomBytes, createHash } = require('crypto');
 const nodemailer = require('nodemailer');
 const OpenAI = require('openai');
 const { google } = require('googleapis');
@@ -12,6 +13,26 @@ require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 const { encrypt, decrypt, isEncrypted, hasKey } = require('./utils/kms');
 const { platformSSOMiddleware } = require('./middleware/platformSSO');
+const { requirePermission } = require("./middleware/rbac");
+const { applyGuardrails } = require("./utils/guardrails");
+const { writeAudit } = require("./utils/audit");
+const { createDistributedRateLimiter } = require("./utils/rateLimit");
+const { loadConversationMemory, updateConversationSummary } = require("./services/memory");
+const { retrieveContext } = require("./services/rag");
+const { evaluateMetricAlerts } = require("./services/alerts");
+const { chooseModel, enforceMonthlyCap } = require("./utils/modelPolicy");
+const { loadPromptBundle } = require("./utils/promptManager");
+const { scoreLead } = require("./utils/leadScoring");
+const { enqueue } = require("./utils/jobQueue");
+const { sendGenericWebhook } = require("./utils/webhook");
+const {
+  EventType,
+  SCHEMA_VERSION: INTEGRATION_SCHEMA_VERSION,
+  listEventTypes,
+} = require("./integrations/domain");
+const { emitIntegrationEvent } = require("./services/outboundEvents");
+const { createRequireTenantApiKey } = require("./middleware/tenantApiKey");
+const { normalizeInbound, listAdapters } = require("./integrations/adapters");
 const PROMPTS_DIR = process.env.PROMPTS_DIR || "prompts/tenants";
 const DEFAULT_TENANT = (process.env.DEFAULT_TENANT || "default").toLowerCase();
 const HOT = process.env.HOT_RELOAD_PROMPTS === "1";
@@ -126,6 +147,9 @@ const {
 
 
 const { calculateCost } = require('./pricing');
+const helmet = require('helmet');
+const { csrfProtectionForMutations, issueCsrfToken } = require('./middleware/csrfApi');
+const { buildAdminPageCsp, EMBED_PAGE_CSP } = require('./utils/csp');
 
 const app = express();
 const COOKIE_SECURE = process.env.NODE_ENV === 'production';
@@ -137,6 +161,18 @@ const CORS_ORIGINS = new Set(
 );
 app.disable("x-powered-by"); // hide Express header
 app.set("trust proxy", 1);   // needed on Render/Railway/Heroku for correct IP/proto
+
+app.use(
+  helmet({
+    contentSecurityPolicy: false,
+    crossOriginEmbedderPolicy: false,
+    // Framing is governed per-page by CSP frame-ancestors (embed: *; admin: none).
+    xFrameOptions: false,
+    hsts: COOKIE_SECURE
+      ? { maxAge: 15552000, includeSubDomains: true, preload: false }
+      : false,
+  })
+);
 
 app.use(cors({
   origin(origin, callback) {
@@ -156,69 +192,47 @@ app.use(cors({
   },
   credentials: true,
   methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Tenant'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Tenant', 'X-CSRF-Token'],
   maxAge: 600,
 }));
 app.use(express.json({ limit: '16kb' }));
-app.use(express.static(path.join(__dirname, 'public')));
-
-// --- Session persistence (tenant_id + session_id) ---
 app.use(cookieParser());
+
+async function serveAdminPage(_req, res, next) {
+  try {
+    const nonce = randomBytes(16).toString("base64url");
+    const tpl = await fsp.readFile(path.join(__dirname, "templates", "admin.html"), "utf8");
+    res.setHeader("Content-Security-Policy", buildAdminPageCsp(nonce));
+    res.type("html").send(tpl.replace(/__CSP_NONCE__/g, nonce));
+  } catch (e) {
+    next(e);
+  }
+}
+// Browsers / links often use trailing slash; only "/admin" matched before, so "/admin/" 404'd.
+app.get("/admin", serveAdminPage);
+app.get("/admin/", serveAdminPage);
+
+app.use(express.static(path.join(__dirname, 'public')));
 
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 
 // Platform SSO — verify platform JWTs and map to local tenant
 app.use(platformSSOMiddleware(prisma));
+app.use(csrfProtectionForMutations);
 
-function getClientIp(req) {
-  const xff = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
-  return xff || req.ip || req.socket?.remoteAddress || 'unknown';
-}
-
-function createRateLimiter({ windowMs, max, keyPrefix }) {
-  const store = new Map();
-
-  setInterval(() => {
-    const now = Date.now();
-    for (const [key, entry] of store.entries()) {
-      if (now >= entry.resetAt) store.delete(key);
-    }
-  }, Math.min(windowMs, 60_000)).unref();
-
-  return (req, res, next) => {
-    const ip = getClientIp(req);
-    const tenant = resolveTenantSlug(req);
-    const key = `${keyPrefix}:${ip}:${tenant}`;
-    const now = Date.now();
-    const current = store.get(key);
-
-    if (!current || now >= current.resetAt) {
-      store.set(key, { count: 1, resetAt: now + windowMs });
-      return next();
-    }
-
-    if (current.count >= max) {
-      const retryAfterSec = Math.max(1, Math.ceil((current.resetAt - now) / 1000));
-      res.set('Retry-After', String(retryAfterSec));
-      return res.status(429).json({ error: 'rate_limit_exceeded' });
-    }
-
-    current.count += 1;
-    return next();
-  };
-}
-
-const messageLimiter = createRateLimiter({
+const messageLimiter = createDistributedRateLimiter({
   windowMs: Number(process.env.MESSAGE_RATE_WINDOW_MS || 60_000),
   max: Number(process.env.MESSAGE_RATE_MAX || 30),
   keyPrefix: 'message',
+  resolveTenant: resolveTenantSlug,
 });
 
-const authLimiter = createRateLimiter({
+const authLimiter = createDistributedRateLimiter({
   windowMs: Number(process.env.AUTH_RATE_WINDOW_MS || 60_000),
   max: Number(process.env.AUTH_RATE_MAX || 20),
   keyPrefix: 'auth',
+  resolveTenant: resolveTenantSlug,
 });
 
 // ---------- DB-first prompts loader with fallback to DEFAULT + files ----------
@@ -256,7 +270,6 @@ async function loadPromptsDBFirst(req) {
 }
 
 
-const { randomUUID, randomBytes } = require('crypto');
 function ensureSid(req, res) {
   let sid = req.cookies?.sid;
   if (!sid) {
@@ -282,6 +295,8 @@ app.use(async (req, res, next) => {
     // Look up tenant by subdomain OR id, else fall back to DEFAULT_TENANT
     const tenantSelect = {
       id: true, name: true, subdomain: true,
+      plan: true, settings: true,
+      apiKeyHash: true, apiKeyLast4: true, apiKeyRotatedAt: true,
       openaiKey: true,
       smtpHost: true, smtpPort: true, smtpUser: true, smtpPass: true,
       emailFrom: true, emailTo: true,
@@ -318,7 +333,10 @@ app.use(async (req, res, next) => {
     req.sessionId = ensureSid(req, res);
 
     // Capture user text (if missing, still allow route handler to decide)
-    const userText = (req.body?.message || req.body?.content || req.body?.text || req.body?.prompt || "").toString().trim();
+    const userTextRaw = (req.body?.message || req.body?.content || req.body?.text || req.body?.prompt || "").toString().trim();
+    const guarded = applyGuardrails(userTextRaw, { redactForLogs: true });
+    const userText = guarded.safeMessage;
+    req.guardrails = guarded;
 
     // Upsert conversation & save user turn if we have text
     const convo = await prisma.conversation.upsert({
@@ -377,14 +395,18 @@ async function loadTenant(req, res, next) {
   }
 }
 
+const requireTenantApiKey = createRequireTenantApiKey({
+  prisma,
+  materializeTenantSecrets,
+  resolveTenantSlug,
+});
+
 function requirePlatformAuth(req, res, next) {
   if (!req.platformUser) {
     return res.status(401).json({ error: 'Platform authentication required' });
   }
   next();
 }
-
-
 
 // --- Simple fuzzy tagger (no extra AI call) ---
 function normalize(s) {
@@ -465,14 +487,21 @@ async function extractTags(message, tenantId) {
 // ----------------- Main chat endpoint -----------------
 app.post('/message', messageLimiter, async (req, res) => {
   const { message, source } = req.body;
-  const text = (message ?? '').toString();   // <— guard
+  const rawText = (message ?? req.body?.content ?? req.body?.text ?? req.body?.prompt ?? '').toString();
+  const guardrails = req.guardrails || applyGuardrails(rawText, { redactForLogs: true });
+  const text = guardrails.safeMessage;
   const { tenant, tenantId, sessionId } = req; // ✅ provided by middleware
 
   console.log("📨 Received message:", text);
   if (source) console.log("📍 Source:", source);
 
-  // ✅ Logging now uses tenantId
-  await logEvent("user", text, tenantId);
+  if (guardrails.injectionDetected && process.env.BLOCK_PROMPT_INJECTION === "1") {
+    await logEvent("guardrails", "Prompt injection pattern detected", tenantId);
+    return res.status(400).json({ reply: "Please rephrase your request without system override instructions." });
+  }
+
+  // ✅ Logging now uses tenantId (PII redacted log payload)
+  await logEvent("user", guardrails.messageForLogs, tenantId);
 
 
   // -------- Lead capture detection --------
@@ -498,15 +527,63 @@ app.post('/message', messageLimiter, async (req, res) => {
     const phone = phoneMatch?.[0] || "";
 
     const tags = await extractTags(text, tenantId);
+    const scored = scoreLead({
+      message: text,
+      source,
+      hasEmail: Boolean(email),
+      hasPhone: Boolean(phone),
+      tags,
+    });
     console.log('leadTags', tags);
 
     // Log to admin + DB
     try {
       await logLead({ name, email, phone, snippet: text, tags }, tenantId);
+      const lead = await prisma.lead.findFirst({
+        where: { tenantId, email, phone },
+        orderBy: { createdAt: "desc" },
+      });
+      if (lead) {
+        await prisma.lead.update({
+          where: { id: lead.id },
+          data: {
+            score: scored.score,
+            status: scored.status,
+            source: source || null,
+            scoredAt: new Date(),
+          },
+        });
+      }
     } catch (e) {
       console.error("Failed to log lead to admin:", e.message);
     }
 
+    await emitIntegrationEvent(
+      prisma,
+      tenantId,
+      EventType.LEAD_CREATED,
+      {
+        lead: {
+          name,
+          email,
+          phone,
+          tags,
+          score: scored.score,
+          status: scored.status,
+          snippet: text,
+        },
+      },
+      {
+        tenantId,
+        name,
+        email,
+        phone,
+        tags,
+        score: scored.score,
+        status: scored.status,
+        snippet: text,
+      }
+    );
 
 // 📧 Per-tenant SMTP (Titan / generic)
 const port = Number(tenant?.smtpPort ?? 587);   // Titan: 587 STARTTLS
@@ -569,14 +646,34 @@ const mailOptions = {
   try {
     console.log("🧠 Sending to OpenAI:", message);
 
-    // Always load prompts (tenant OR default)
-    const { system, policy, voice } = await loadPromptsDBFirst(req);
+    // Always load prompts (tenant OR default), then overlay versioned prompt variants.
+    const basePrompts = await loadPromptsDBFirst(req);
+    const { system, policy, voice } = await loadPromptBundle(prisma, tenantId, basePrompts);
     const systemPrompt = system || "You are Solomon, the professional AI assistant.";
+    const memory = await loadConversationMemory(prisma, tenantId, sessionId, { limit: 8 });
+    const ragSnippets = await retrieveContext(prisma, tenantId, text, 4);
+    const chosenModel = chooseModel(tenant, text);
+    const spendCap = Number(tenant?.settings?.costCapUsd || process.env.DEFAULT_MONTHLY_CAP_USD || 0);
+    const cap = await enforceMonthlyCap(prisma, tenantId, spendCap);
+    if (!cap.ok) {
+      await logError("Billing", `Monthly cap exceeded (${cap.spent}/${spendCap})`, tenantId);
+      return res.status(402).json({ reply: "This tenant has reached the monthly AI budget cap." });
+    }
 
     const messages = [
       { role: "system", content: systemPrompt },
       ...(policy ? [{ role: "system", content: `Tenant Policy (${tenant?.name || tenantId}):\n${policy}` }] : []),
       ...(voice  ? [{ role: "system", content: `Voice & Style Guide (${tenant?.name || tenantId}):\n${voice}` }] : []),
+      ...(memory.summary ? [{ role: "system", content: `Conversation Summary:\n${memory.summary}` }] : []),
+      ...memory.messages.slice(-8),
+      ...(ragSnippets.length
+        ? [{
+            role: "system",
+            content: `Knowledge Context:\n${ragSnippets
+              .map((x) => `- ${x.documentTitle}${x.sourceUrl ? ` (${x.sourceUrl})` : ""}: ${x.content}`)
+              .join("\n")}`,
+          }]
+        : []),
       { role: "user", content: text }
     ];
 
@@ -584,11 +681,12 @@ const mailOptions = {
 
     const start = Date.now();
     const aiResponse = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: chosenModel,
       messages
     });
     const latency = Date.now() - start;
     await logMetric("latency", latency, tenantId);
+    await evaluateMetricAlerts(prisma, tenantId, "latency");
     await logSuccess(tenantId);
 
     // ✅ Normalize model & map tokens to camelCase for DB
@@ -617,11 +715,12 @@ const mailOptions = {
 
     await logEvent("ai", reply, tenantId);
     await logConversation(sessionId, {
-      userMessage: message,
+      userMessage: text,
       aiReply: reply,
       tokens: { promptTokens, completionTokens, cachedTokens },
       cost: costs.total
     }, tenantId);
+    await updateConversationSummary(prisma, tenantId, sessionId, text, reply);
 
     res.json({ reply });
 
@@ -649,7 +748,7 @@ function getOAuthClient(tenant) {
 }
 
 // --- Begin per-tenant Google OAuth routes ---
-app.get('/auth', authLimiter, requirePlatformAuth, loadTenant, async (req, res) => {
+app.get('/auth', authLimiter, requirePlatformAuth, requirePermission("config:read"), loadTenant, async (req, res) => {
   try {
     const { tenant } = req; // now defined
     const oauth2Client = getOAuthClient(tenant);
@@ -667,6 +766,12 @@ app.get('/auth', authLimiter, requirePlatformAuth, loadTenant, async (req, res) 
       redirect_uri: tenant.googleRedirectUri,
       state
     });
+    await writeAudit(prisma, req, {
+      action: "oauth.start",
+      resource: "google_oauth",
+      outcome: "ok",
+      details: { tenantId: req.tenantId },
+    });
     res.redirect(authUrl);
   } catch (err) {
     console.error("❌ OAuth Auth Error:", err.message);
@@ -674,7 +779,7 @@ app.get('/auth', authLimiter, requirePlatformAuth, loadTenant, async (req, res) 
   }
 });
 
-app.get('/api/oauth2callback', authLimiter, requirePlatformAuth, loadTenant, async (req, res) => {
+app.get('/api/oauth2callback', authLimiter, requirePlatformAuth, requirePermission("config:read"), loadTenant, async (req, res) => {
   try {
     const code = req.query.code;
     const state = String(req.query.state || '');
@@ -700,6 +805,12 @@ app.get('/api/oauth2callback', authLimiter, requirePlatformAuth, loadTenant, asy
 
 
     oauth2Client.setCredentials(tokens);
+    await writeAudit(prisma, req, {
+      action: "oauth.callback",
+      resource: "google_oauth",
+      outcome: "ok",
+      details: { tenantId },
+    });
     res.send("✅ Authorization successful! You may close this window.");
   } catch (err) {
     console.error("❌ Error retrieving access token:", err.message);
@@ -710,6 +821,14 @@ app.get('/api/oauth2callback', authLimiter, requirePlatformAuth, loadTenant, asy
 
 
 // ---- Platform Integration API ----
+
+// CSRF token for browser sessions using platform_token cookie (SOC 2 / OWASP)
+app.get(
+  "/api/security/csrf-token",
+  requirePlatformAuth,
+  requirePermission("config:read"),
+  (req, res) => issueCsrfToken(req, res)
+);
 
 // Health check (used by platform to verify Solomon is reachable)
 app.get('/api/health', (_req, res) => {
@@ -730,13 +849,20 @@ app.get('/api/ready', async (_req, res) => {
 });
 
 // GET /api/config — tenant config for portal (requires platform SSO)
-app.get('/api/config', loadTenant, (req, res) => {
+app.get('/api/config', requirePlatformAuth, requirePermission("config:read"), loadTenant, async (req, res) => {
   if (!req.platformUser) {
     return res.status(401).json({ error: 'Platform authentication required' });
   }
 
   const t = req.tenant;
   if (!t) return res.status(404).json({ error: 'Tenant not found' });
+
+  await writeAudit(prisma, req, {
+    action: "config.read",
+    resource: "tenant_config",
+    outcome: "ok",
+    details: { tenantId: t.id },
+  });
 
   res.json({
     tenantId: t.id,
@@ -755,11 +881,7 @@ app.get('/api/config', loadTenant, (req, res) => {
 });
 
 // GET /api/stats — aggregate stats for portal dashboard (requires platform SSO)
-app.get('/api/stats', loadTenant, async (req, res) => {
-  if (!req.platformUser) {
-    return res.status(401).json({ error: 'Platform authentication required' });
-  }
-
+app.get('/api/stats', requirePlatformAuth, requirePermission("stats:read"), loadTenant, async (req, res) => {
   const tenantId = req.tenantId;
   try {
     const [conversations, leads, messages, recentUsage] = await Promise.all([
@@ -778,6 +900,12 @@ app.get('/api/stats', loadTenant, async (req, res) => {
       }),
     ]);
 
+    await writeAudit(prisma, req, {
+      action: "stats.read",
+      resource: "tenant_stats",
+      outcome: "ok",
+      details: { tenantId },
+    });
     res.json({
       conversations,
       leads,
@@ -792,6 +920,604 @@ app.get('/api/stats', loadTenant, async (req, res) => {
   } catch (err) {
     console.error('Stats fetch failed:', err);
     res.status(500).json({ error: 'Failed to fetch stats' });
+  }
+});
+
+app.post('/api/keys/rotate', authLimiter, requirePlatformAuth, requirePermission("config:write"), loadTenant, async (req, res) => {
+  const tenantId = req.tenantId;
+  try {
+    const clearKey = `qmb_${randomBytes(24).toString("hex")}`;
+    const hash = createHash("sha256").update(clearKey).digest("hex");
+    await prisma.tenant.update({
+      where: { id: tenantId },
+      data: {
+        apiKeyHash: hash,
+        apiKeyLast4: clearKey.slice(-4),
+        apiKeyRotatedAt: new Date(),
+      },
+    });
+    await writeAudit(prisma, req, {
+      action: "apikey.rotate",
+      resource: "tenant_apikey",
+      outcome: "ok",
+      details: { tenantId },
+    });
+    res.json({ apiKey: clearKey, rotatedAt: new Date().toISOString() });
+  } catch (err) {
+    console.error("API key rotate failed", err);
+    await writeAudit(prisma, req, {
+      action: "apikey.rotate",
+      resource: "tenant_apikey",
+      outcome: "error",
+      details: { message: err.message, tenantId },
+    });
+    res.status(500).json({ error: "api_key_rotate_failed" });
+  }
+});
+
+function assertAllowedWebhookUrl(endpoint) {
+  let url;
+  try {
+    url = new URL(String(endpoint).trim());
+  } catch {
+    return { error: "invalid_endpoint" };
+  }
+  const host = url.hostname.toLowerCase();
+  const isLocal = host === "localhost" || host === "127.0.0.1" || host === "[::1]";
+  if (process.env.NODE_ENV === "production" && url.protocol !== "https:" && !isLocal) {
+    return { error: "https_required" };
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") {
+    return { error: "invalid_endpoint" };
+  }
+  return { ok: true };
+}
+
+// Canonical event types for outbound webhook filters (dashboard + API clients)
+app.get("/api/integrations/webhooks/meta", requirePlatformAuth, requirePermission("config:read"), (_req, res) => {
+  res.json({ schemaVersion: INTEGRATION_SCHEMA_VERSION, eventTypes: listEventTypes() });
+});
+
+app.get("/api/integrations/webhooks", requirePlatformAuth, requirePermission("config:read"), loadTenant, async (req, res) => {
+  const rows = await prisma.leadWebhook.findMany({
+    where: { tenantId: req.tenantId },
+    orderBy: { createdAt: "desc" },
+    select: {
+      id: true,
+      endpoint: true,
+      enabled: true,
+      events: true,
+      createdAt: true,
+    },
+  });
+  res.json({ webhooks: rows });
+});
+
+app.post("/api/integrations/webhooks", authLimiter, requirePlatformAuth, requirePermission("config:write"), loadTenant, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const endpoint = String(body.endpoint || "").trim();
+    if (!endpoint) return res.status(400).json({ error: "endpoint_required" });
+    const chk = assertAllowedWebhookUrl(endpoint);
+    if (chk.error) return res.status(400).json({ error: chk.error });
+
+    const enabled = body.enabled !== false;
+    const events = Array.isArray(body.events)
+      ? body.events.filter((e) => typeof e === "string").map((e) => e.slice(0, 128)).slice(0, 32)
+      : [];
+    const secret =
+      body.secret === undefined || body.secret === null || body.secret === ""
+        ? null
+        : String(body.secret).slice(0, 512);
+
+    const row = await prisma.leadWebhook.create({
+      data: {
+        tenantId: req.tenantId,
+        endpoint: endpoint.slice(0, 2048),
+        secret,
+        enabled,
+        events,
+      },
+      select: { id: true, endpoint: true, enabled: true, events: true, createdAt: true },
+    });
+
+    await writeAudit(prisma, req, {
+      action: "webhook.create",
+      resource: "lead_webhook",
+      resourceId: row.id,
+      outcome: "ok",
+    });
+    res.status(201).json({ webhook: row });
+  } catch (err) {
+    console.error("webhook create failed", err);
+    res.status(500).json({ error: "webhook_create_failed" });
+  }
+});
+
+app.patch("/api/integrations/webhooks/:id", authLimiter, requirePlatformAuth, requirePermission("config:write"), loadTenant, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const existing = await prisma.leadWebhook.findFirst({
+      where: { id, tenantId: req.tenantId },
+    });
+    if (!existing) return res.status(404).json({ error: "not_found" });
+
+    const body = req.body || {};
+    const data = {};
+    if (typeof body.endpoint === "string") {
+      const ep = body.endpoint.trim();
+      const chk = assertAllowedWebhookUrl(ep);
+      if (chk.error) return res.status(400).json({ error: chk.error });
+      data.endpoint = ep.slice(0, 2048);
+    }
+    if (typeof body.enabled === "boolean") data.enabled = body.enabled;
+    if (Array.isArray(body.events)) {
+      data.events = body.events.filter((e) => typeof e === "string").map((e) => e.slice(0, 128)).slice(0, 32);
+    }
+    if (body.secret === null) data.secret = null;
+    else if (typeof body.secret === "string" && body.secret.length > 0) {
+      data.secret = String(body.secret).slice(0, 512);
+    }
+
+    const row = await prisma.leadWebhook.update({
+      where: { id },
+      data,
+      select: { id: true, endpoint: true, enabled: true, events: true, createdAt: true },
+    });
+
+    await writeAudit(prisma, req, {
+      action: "webhook.update",
+      resource: "lead_webhook",
+      resourceId: id,
+      outcome: "ok",
+    });
+    res.json({ webhook: row });
+  } catch (err) {
+    console.error("webhook update failed", err);
+    res.status(500).json({ error: "webhook_update_failed" });
+  }
+});
+
+app.delete("/api/integrations/webhooks/:id", authLimiter, requirePlatformAuth, requirePermission("config:write"), loadTenant, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const existing = await prisma.leadWebhook.findFirst({
+      where: { id, tenantId: req.tenantId },
+    });
+    if (!existing) return res.status(404).json({ error: "not_found" });
+
+    await prisma.leadWebhook.delete({ where: { id } });
+    await writeAudit(prisma, req, {
+      action: "webhook.delete",
+      resource: "lead_webhook",
+      resourceId: id,
+      outcome: "ok",
+    });
+    res.status(204).end();
+  } catch (err) {
+    console.error("webhook delete failed", err);
+    res.status(500).json({ error: "webhook_delete_failed" });
+  }
+});
+
+// ---- Human handoff cockpit API ----
+app.post('/api/handoff/sessions', requirePlatformAuth, requirePermission("handoff:write"), loadTenant, async (req, res) => {
+  try {
+    const { sessionId, reason, priority, transcript } = req.body || {};
+    const row = await prisma.handoffSession.create({
+      data: {
+        tenantId: req.tenantId,
+        sessionId: String(sessionId || req.cookies?.sid || randomUUID()),
+        reason: reason ? String(reason) : null,
+        priority: String(priority || "normal"),
+        transcript: transcript ?? undefined,
+      },
+    });
+    await writeAudit(prisma, req, {
+      action: "handoff.create",
+      resource: "handoff_session",
+      resourceId: row.id,
+      outcome: "ok",
+    });
+    res.status(201).json({ handoff: row });
+  } catch (err) {
+    console.error("handoff create failed", err.message);
+    res.status(500).json({ error: "handoff_create_failed" });
+  }
+});
+
+app.post('/api/handoff/:id/assign', requirePlatformAuth, requirePermission("handoff:write"), loadTenant, async (req, res) => {
+  try {
+    const row = await prisma.handoffSession.update({
+      where: { id: req.params.id },
+      data: {
+        assignedTo: String(req.body?.assignedTo || req.platformUser?.email || "operator"),
+        status: String(req.body?.status || "in_progress"),
+      },
+    });
+    await writeAudit(prisma, req, {
+      action: "handoff.assign",
+      resource: "handoff_session",
+      resourceId: row.id,
+      outcome: "ok",
+    });
+    res.json({ handoff: row });
+  } catch (err) {
+    res.status(500).json({ error: "handoff_assign_failed" });
+  }
+});
+
+// ---- Omnichannel orchestration (web-first + webhook adapters) ----
+app.post('/api/channels/events', loadTenant, async (req, res) => {
+  try {
+    const { channel = "web", externalUserId = "", text = "", metadata = null } = req.body || {};
+    if (!externalUserId) return res.status(400).json({ error: "external_user_id_required" });
+    const identity = await prisma.channelIdentity.upsert({
+      where: {
+        tenantId_channel_externalUserId: {
+          tenantId: req.tenantId,
+          channel: String(channel),
+          externalUserId: String(externalUserId),
+        },
+      },
+      update: { metadata: metadata ?? undefined, lastSeenAt: new Date() },
+      create: {
+        tenantId: req.tenantId,
+        channel: String(channel),
+        externalUserId: String(externalUserId),
+        sessionId: req.cookies?.sid || null,
+        metadata: metadata ?? undefined,
+      },
+    });
+    await prisma.channelMessage.create({
+      data: {
+        tenantId: req.tenantId,
+        channel: String(channel),
+        externalUserId: String(externalUserId),
+        direction: "inbound",
+        content: String(text || ""),
+        metadata: metadata ?? undefined,
+      },
+    });
+    res.json({ ok: true, identityId: identity.id });
+  } catch (err) {
+    console.error("channel event failed", err.message);
+    res.status(500).json({ error: "channel_event_failed" });
+  }
+});
+
+app.get('/api/channels/identities', requirePlatformAuth, requirePermission("funnel:read"), loadTenant, async (req, res) => {
+  const rows = await prisma.channelIdentity.findMany({
+    where: { tenantId: req.tenantId },
+    orderBy: { lastSeenAt: "desc" },
+    take: Math.min(200, Number(req.query.limit || 50)),
+  });
+  res.json({ identities: rows });
+});
+
+// ---- Booking + quoting automation ----
+app.post('/api/appointments', requirePlatformAuth, requirePermission("booking:write"), loadTenant, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const row = await prisma.appointment.create({
+      data: {
+        tenantId: req.tenantId,
+        leadId: body.leadId ? String(body.leadId) : null,
+        title: String(body.title || "Consultation"),
+        startsAt: new Date(body.startsAt || Date.now()),
+        endsAt: body.endsAt ? new Date(body.endsAt) : null,
+        metadata: body.metadata ?? undefined,
+      },
+    });
+    await prisma.revenueEvent.create({
+      data: {
+        tenantId: req.tenantId,
+        leadId: row.leadId || null,
+        stage: "appointment_booked",
+        metadata: { appointmentId: row.id },
+      },
+    });
+    res.status(201).json({ appointment: row });
+  } catch (err) {
+    res.status(500).json({ error: "appointment_create_failed" });
+  }
+});
+
+app.post('/api/quotes', requirePlatformAuth, requirePermission("quote:write"), loadTenant, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const row = await prisma.quote.create({
+      data: {
+        tenantId: req.tenantId,
+        leadId: body.leadId ? String(body.leadId) : null,
+        amount: Number(body.amount || 0),
+        currency: String(body.currency || "USD"),
+        items: body.items ?? undefined,
+        notes: body.notes ? String(body.notes) : null,
+      },
+    });
+    await prisma.revenueEvent.create({
+      data: {
+        tenantId: req.tenantId,
+        leadId: row.leadId || null,
+        stage: "quote_sent",
+        amount: row.amount,
+        metadata: { quoteId: row.id },
+      },
+    });
+    res.status(201).json({ quote: row });
+  } catch (err) {
+    res.status(500).json({ error: "quote_create_failed" });
+  }
+});
+
+// ---- Compliance and trust APIs ----
+app.post('/api/compliance/consent', loadTenant, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const row = await prisma.consentRecord.create({
+      data: {
+        tenantId: req.tenantId,
+        subject: String(body.subject || req.cookies?.sid || "anonymous"),
+        purpose: String(body.purpose || "messaging"),
+        granted: Boolean(body.granted),
+        source: String(body.source || "web"),
+        metadata: body.metadata ?? undefined,
+      },
+    });
+    res.status(201).json({ consent: row });
+  } catch (err) {
+    res.status(500).json({ error: "consent_write_failed" });
+  }
+});
+
+app.get('/api/compliance/export', requirePlatformAuth, requirePermission("audit:read"), loadTenant, async (req, res) => {
+  const since = req.query.since ? new Date(String(req.query.since)) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  const [consents, audits] = await Promise.all([
+    prisma.consentRecord.findMany({ where: { tenantId: req.tenantId, createdAt: { gte: since } } }),
+    prisma.auditLog.findMany({ where: { tenantId: req.tenantId, createdAt: { gte: since } } }),
+  ]);
+  res.json({ tenantId: req.tenantId, since, consents, audits });
+});
+
+// ---- Revenue and conversion intelligence ----
+app.get('/api/revenue/funnel', requirePlatformAuth, requirePermission("funnel:read"), loadTenant, async (req, res) => {
+  const tenantId = req.tenantId;
+  const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  const [leads, booked, quoted, won] = await Promise.all([
+    prisma.lead.count({ where: { tenantId, createdAt: { gte: since } } }),
+    prisma.revenueEvent.count({ where: { tenantId, stage: "appointment_booked", createdAt: { gte: since } } }),
+    prisma.revenueEvent.count({ where: { tenantId, stage: "quote_sent", createdAt: { gte: since } } }),
+    prisma.revenueEvent.aggregate({
+      where: { tenantId, stage: "deal_won", createdAt: { gte: since } },
+      _count: true,
+      _sum: { amount: true },
+    }),
+  ]);
+  res.json({
+    period: "30d",
+    leads,
+    appointments: booked,
+    quotes: quoted,
+    wins: won._count,
+    wonRevenue: Number(won._sum.amount || 0),
+  });
+});
+
+// ---- Optimization loop (prompt/model variants to revenue outcomes) ----
+app.post('/api/optimize/record', requirePlatformAuth, requirePermission("optimize:write"), loadTenant, async (req, res) => {
+  try {
+    const { experimentKey, variant, impressions = 0, conversions = 0, revenue = 0 } = req.body || {};
+    if (!experimentKey || !variant) return res.status(400).json({ error: "experiment_key_and_variant_required" });
+    const row = await prisma.optimizationRun.upsert({
+      where: {
+        tenantId_experimentKey_variant: {
+          tenantId: req.tenantId,
+          experimentKey: String(experimentKey),
+          variant: String(variant),
+        },
+      },
+      update: {
+        impressions: { increment: Number(impressions || 0) },
+        conversions: { increment: Number(conversions || 0) },
+        revenue: { increment: Number(revenue || 0) },
+      },
+      create: {
+        tenantId: req.tenantId,
+        experimentKey: String(experimentKey),
+        variant: String(variant),
+        impressions: Number(impressions || 0),
+        conversions: Number(conversions || 0),
+        revenue: Number(revenue || 0),
+      },
+    });
+    res.json({ optimization: row });
+  } catch (err) {
+    res.status(500).json({ error: "optimization_record_failed" });
+  }
+});
+
+app.get('/api/optimize/recommendation', requirePlatformAuth, requirePermission("optimize:read"), loadTenant, async (req, res) => {
+  const experimentKey = String(req.query.experimentKey || "default");
+  const runs = await prisma.optimizationRun.findMany({
+    where: { tenantId: req.tenantId, experimentKey },
+  });
+  if (!runs.length) return res.json({ recommendation: null, reason: "no_data" });
+  const scored = runs.map((r) => ({
+    variant: r.variant,
+    cv: r.impressions > 0 ? r.conversions / r.impressions : 0,
+    rev: r.revenue,
+  }));
+  scored.sort((a, b) => (b.cv + b.rev / 1000) - (a.cv + a.rev / 1000));
+  res.json({ recommendation: scored[0], candidates: scored });
+});
+
+// ---- Re-engagement campaigns ----
+app.post('/api/reengagement/campaigns', requirePlatformAuth, requirePermission("campaign:write"), loadTenant, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const row = await prisma.reengagementCampaign.create({
+      data: {
+        tenantId: req.tenantId,
+        name: String(body.name || "Untitled Campaign"),
+        channel: String(body.channel || "webhook"),
+        criteria: body.criteria ?? undefined,
+        template: String(body.template || "Hi {{name}}, just checking in."),
+        status: "scheduled",
+        launchedAt: new Date(),
+      },
+    });
+
+    const { dispatched } = await emitIntegrationEvent(prisma, req.tenantId, EventType.CAMPAIGN_LAUNCHED, {
+      campaign: {
+        id: row.id,
+        name: row.name,
+        template: row.template,
+        channel: row.channel,
+      },
+    });
+
+    res.status(201).json({ campaign: row, dispatchedWebhooks: dispatched });
+  } catch (err) {
+    res.status(500).json({ error: "campaign_create_failed" });
+  }
+});
+
+// ---- Competitor-aware benchmarking ----
+app.post('/api/benchmarks/run', requirePlatformAuth, requirePermission("benchmark:write"), loadTenant, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const baseline = body.baseline ?? {};
+    const candidate = body.candidate ?? {};
+    const score = Number(candidate.conversionRate || 0) - Number(baseline.conversionRate || 0);
+    const row = await prisma.benchmarkRun.create({
+      data: {
+        tenantId: req.tenantId,
+        name: String(body.name || "Benchmark"),
+        baseline,
+        candidate,
+        score,
+        winner: score >= 0 ? "candidate" : "baseline",
+      },
+    });
+    res.status(201).json({ benchmark: row });
+  } catch (err) {
+    res.status(500).json({ error: "benchmark_run_failed" });
+  }
+});
+
+app.get('/api/benchmarks', requirePlatformAuth, requirePermission("benchmark:read"), loadTenant, async (req, res) => {
+  const rows = await prisma.benchmarkRun.findMany({
+    where: { tenantId: req.tenantId },
+    orderBy: { createdAt: "desc" },
+    take: Math.min(Number(req.query.limit || 20), 100),
+  });
+  res.json({ benchmarks: rows });
+});
+
+// ---- Self-serve onboarding wizard APIs ----
+app.post('/api/onboarding/start', requirePlatformAuth, requirePermission("onboarding:write"), loadTenant, async (req, res) => {
+  const checklist = {
+    branding: false,
+    prompts: false,
+    channels: false,
+    compliance: false,
+    launch: false,
+  };
+  const row = await prisma.onboardingSession.create({
+    data: {
+      tenantId: req.tenantId,
+      checklist,
+      progress: 0,
+      status: "started",
+    },
+  });
+  res.status(201).json({ onboarding: row });
+});
+
+app.post('/api/onboarding/:id/step', requirePlatformAuth, requirePermission("onboarding:write"), loadTenant, async (req, res) => {
+  const step = String(req.body?.step || "");
+  const row = await prisma.onboardingSession.findUnique({ where: { id: req.params.id } });
+  if (!row || row.tenantId !== req.tenantId) return res.status(404).json({ error: "onboarding_not_found" });
+  const checklist = { ...(row.checklist || {}) };
+  if (step && step in checklist) checklist[step] = true;
+  const total = Object.keys(checklist).length || 1;
+  const done = Object.values(checklist).filter(Boolean).length;
+  const progress = Math.round((done / total) * 100);
+  const updated = await prisma.onboardingSession.update({
+    where: { id: row.id },
+    data: {
+      checklist,
+      progress,
+      status: progress >= 100 ? "completed" : "started",
+      completedAt: progress >= 100 ? new Date() : null,
+    },
+  });
+  res.json({ onboarding: updated });
+});
+
+// ---- Integration layer (canonical events + inbound adapters) ----
+app.get("/api/integrations/v1/adapters", requireTenantApiKey, (req, res) => {
+  const settings = req.tenant?.settings || {};
+  const all = listAdapters();
+  const allowed = settings?.integrations?.enabledProviders;
+  const enabled =
+    Array.isArray(allowed) && allowed.length ? all.filter((a) => allowed.includes(a)) : all;
+  res.json({
+    schemaVersion: INTEGRATION_SCHEMA_VERSION,
+    eventTypes: listEventTypes(),
+    adapters: all,
+    enabledForTenant: enabled,
+    webhookEventsHint:
+      "LeadWebhook.events: omit or [] = all events; [\"*\"] = explicit wildcard; else list eventTypes to filter.",
+  });
+});
+
+app.post("/api/integrations/v1/inbound/:provider", requireTenantApiKey, async (req, res) => {
+  const provider = String(req.params.provider || "").toLowerCase();
+  const settings = req.tenant?.settings || {};
+  const out = normalizeInbound(provider, req.body || {}, settings);
+  if (out.error === "unknown_provider") {
+    return res.status(404).json({ error: out.error, adapters: out.known });
+  }
+  if (out.error === "provider_disabled") {
+    return res.status(403).json({ error: out.error, provider: out.provider });
+  }
+  if (out.error) {
+    return res.status(400).json({ error: out.error, message: out.message });
+  }
+
+  const record = {
+    provider: out.provider,
+    sessionId: req.body?.sessionId ?? null,
+    type: out.type,
+    payload: out.payload,
+    receivedAt: new Date().toISOString(),
+  };
+
+  await prisma.event.create({
+    data: {
+      tenantId: req.tenantId,
+      type: `integration.inbound.${out.type}`,
+      content: JSON.stringify(record),
+    },
+  });
+
+  res.status(202).json({
+    ok: true,
+    accepted: { type: out.type, provider: out.provider },
+  });
+});
+
+// ---- Generic webhook adapter for external CRM/booking stacks ----
+app.post('/api/integrations/webhook-test', requirePlatformAuth, requirePermission("config:write"), loadTenant, async (req, res) => {
+  const { endpoint, payload = {}, secret = "" } = req.body || {};
+  if (!endpoint) return res.status(400).json({ error: "endpoint_required" });
+  try {
+    const out = await sendGenericWebhook(String(endpoint), { tenantId: req.tenantId, ...payload }, String(secret || ""));
+    res.json({ ok: out.ok, status: out.status });
+  } catch (err) {
+    res.status(502).json({ error: "webhook_failed", message: err.message });
   }
 });
 
@@ -814,13 +1540,21 @@ app.get('/sso/callback', authLimiter, async (req, res) => {
     res.cookie('platform_token', token, {
       httpOnly: true,
       secure: COOKIE_SECURE,
-      sameSite: 'Lax',
+      sameSite: process.env.PLATFORM_COOKIE_SAMESITE || 'Strict',
       maxAge: 4 * 60 * 1000, // 4 minutes (token is 5 min, gives buffer)
       path: '/',
     });
 
     // Redirect to the main app with the tenant context
     const slug = result.tenant?.slug || '';
+    await writeAudit(prisma, req, {
+      actorType: "platform_user",
+      actorId: String(result.user?.id || ""),
+      action: "sso.callback",
+      resource: "platform_token",
+      outcome: "ok",
+      details: { slug },
+    });
     res.redirect(`/?tenant=${encodeURIComponent(slug)}`);
   } catch (err) {
     console.error('[SSO callback] Error:', err);
@@ -829,8 +1563,14 @@ app.get('/sso/callback', authLimiter, async (req, res) => {
 });
 
 // ----------------- Static pages -----------------
-app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+app.get('/', async (_req, res, next) => {
+  try {
+    const html = await fsp.readFile(path.join(__dirname, "templates", "chat.html"), "utf8");
+    res.setHeader("Content-Security-Policy", EMBED_PAGE_CSP);
+    res.type("html").send(html);
+  } catch (e) {
+    next(e);
+  }
 });
 
 app.get('/login', (req, res) => {
@@ -948,7 +1688,11 @@ if (process.env.ENABLE_HEARTBEAT === '1') {
 
 // ----------------- Server startup -----------------
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => {
-  console.log(`✅ Solomon backend running on port ${PORT}`);
-});
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`✅ Solomon backend running on port ${PORT}`);
+  });
+}
+
+module.exports = { app };
 

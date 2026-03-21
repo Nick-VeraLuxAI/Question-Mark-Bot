@@ -68,6 +68,16 @@ function platformSSOMiddleware(prisma) {
       return next();
     }
 
+    // Optional hard enforcement: if caller explicitly asks for a tenant,
+    // it must match the platform tenant slug.
+    if (process.env.STRICT_TENANT_BINDING === "1") {
+      const asked = String(req.query?.tenant || req.headers["x-tenant"] || "").toLowerCase();
+      const expected = String(result.tenant?.slug || "").toLowerCase();
+      if (asked && expected && asked !== expected) {
+        return res.status(403).json({ error: "tenant_mismatch" });
+      }
+    }
+
     // Attach platform user context
     req.platformUser = result.user;
     req.platformTenant = result.tenant;

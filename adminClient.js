@@ -1,6 +1,7 @@
 // adminClient.js
 const axios = require("axios");
 const { PrismaClient } = require("@prisma/client");
+const { enqueue } = require("./utils/jobQueue");
 const prisma = new PrismaClient();
 
 // Where the Admin intake is listening (strip trailing /)
@@ -36,6 +37,21 @@ function hdrs(tenantId) {
 async function postLog(body, tenantId) {
   if (!wantAdmin) return false; // respect write mode
   const headers = hdrs(tenantId);
+  const asyncMode = process.env.ADMIN_LOG_ASYNC === "1";
+
+  if (asyncMode) {
+    try {
+      const queued = await enqueue("events", "admin-log", {
+        url: `${ADMIN_URL}/api/portal/log`,
+        body,
+        headers,
+      });
+      if (queued) return true;
+    } catch (err) {
+      console.warn(`⚠️ Admin log queue failed: ${err.message}`);
+    }
+  }
+
   try {
     await axios.post(`${ADMIN_URL}/api/portal/log`, body, { headers, timeout: 4000 });
     return true;
@@ -47,6 +63,17 @@ async function postLog(body, tenantId) {
         return true;
       } catch (e2) {
         console.warn(`⚠️ Admin log failed (retry): ${e2.response?.status || ""} ${e2.message}`);
+        try {
+          await prisma.outboxJob.create({
+            data: {
+              tenantId: tenantId || null,
+              queue: "events",
+              name: "admin-log",
+              payload: { body, headers, url: `${ADMIN_URL}/api/portal/log` },
+              status: "pending",
+            },
+          });
+        } catch {}
         return false;
       }
     }

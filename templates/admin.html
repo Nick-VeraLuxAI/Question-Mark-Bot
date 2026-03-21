@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Solomon — Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/admin/admin.css?v=2" />
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div>
+        <h1>Solomon dashboard</h1>
+        <p class="sub">Tenant stats, API key, and outbound webhooks</p>
+      </div>
+      <div class="toolbar">
+        <div>
+          <label for="tenant-slug">Tenant</label><br />
+          <input type="text" id="tenant-slug" placeholder="default" autocomplete="off" />
+        </div>
+        <div class="toolbar-end">
+          <button type="button" id="btn-reload">Refresh</button>
+        </div>
+      </div>
+    </header>
+
+    <div id="auth-banner" class="banner" hidden></div>
+
+    <section class="panel" id="panel-stats">
+      <h2>Overview</h2>
+      <div id="stats-grid" class="grid"></div>
+      <p class="muted mt-1" id="config-line"></p>
+    </section>
+
+    <section class="panel">
+      <h2>Integration API key</h2>
+      <p class="muted">Used for <code>/api/integrations/v1/*</code> inbound routes. Shown once after rotate.</p>
+      <button type="button" id="btn-rotate-key">Rotate API key</button>
+      <div id="key-reveal" class="key-reveal" hidden></div>
+    </section>
+
+    <section class="panel">
+      <h2>Outbound webhooks</h2>
+      <p class="muted">Signed POSTs with canonical <code>schemaVersion</code> / <code>event</code>. Empty event list = all events.</p>
+
+      <div class="form-row">
+        <label for="wh-endpoint">Endpoint URL</label>
+        <input type="text" id="wh-endpoint" placeholder="https://your-system.com/hooks/solomon" />
+      </div>
+      <div class="form-row">
+        <label for="wh-secret">Secret (optional, HMAC)</label>
+        <input type="text" id="wh-secret" placeholder="shared secret" autocomplete="off" />
+      </div>
+      <div class="form-row">
+        <label>Events (leave unchecked for “all”)</label>
+        <div class="chips" id="wh-events"></div>
+      </div>
+      <button type="button" id="btn-add-webhook">Add webhook</button>
+
+      <table class="mt-125">
+        <thead>
+          <tr>
+            <th>Endpoint</th>
+            <th>Enabled</th>
+            <th>Events</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="wh-tbody"></tbody>
+      </table>
+    </section>
+
+    <p class="muted mt-2">
+      Auth: platform SSO cookie from <code>/sso/callback</code>. Cookie sessions require a CSRF token (fetched automatically before each change). For local dev you may use a Bearer token instead.
+    </p>
+    <section class="panel" id="dev-section">
+      <h2>Developer</h2>
+      <p class="muted dev-warn">
+        Storing Bearer tokens in the browser is an <strong>XSS risk</strong> and is discouraged for production / SOC 2; prefer SSO only.
+      </p>
+      <div class="form-row">
+        <label for="dev-token">Authorization Bearer (optional)</label>
+        <input type="text" id="dev-token" placeholder="eyJ…" autocomplete="off" />
+      </div>
+      <button type="button" class="secondary" id="btn-save-token">Save token (localStorage)</button>
+      <button type="button" class="secondary" id="btn-clear-token">Clear</button>
+    </section>
+  </div>
+
+  <script src="/admin/admin.js?v=2" defer nonce="__CSP_NONCE__"></script>
+</body>
+</html>
