@@ -145,7 +145,8 @@ const {
 const { calculateCost } = require('./pricing');
 const helmet = require('helmet');
 const { csrfProtectionForMutations, issueCsrfToken } = require('./middleware/csrfApi');
-const { buildAdminPageCsp, EMBED_PAGE_CSP } = require('./utils/csp');
+const { buildAdminPageCsp, buildEmbedPageCsp } = require("./utils/csp");
+const { requestCorrelationMiddleware } = require("./middleware/requestCorrelation");
 
 const app = express();
 const COOKIE_SECURE = process.env.NODE_ENV === 'production';
@@ -188,16 +189,21 @@ app.use(cors({
   },
   credentials: true,
   methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Tenant', 'X-CSRF-Token'],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Tenant", "X-CSRF-Token", "X-Request-Id"],
   maxAge: 600,
 }));
 app.use(express.json({ limit: '16kb' }));
 app.use(cookieParser());
+app.use(requestCorrelationMiddleware);
 
 async function serveAdminPage(_req, res, next) {
   try {
     const nonce = randomBytes(16).toString("base64url");
-    const tpl = await fsp.readFile(path.join(__dirname, "templates", "admin.html"), "utf8");
+    let tpl = await fsp.readFile(path.join(__dirname, "templates", "admin.html"), "utf8");
+    const hideDev =
+      process.env.NODE_ENV === "production" && process.env.ALLOW_ADMIN_BEARER_DEV_TOOLS !== "1";
+    const devAttrs = hideDev ? 'hidden style="display:none !important" aria-hidden="true"' : "";
+    tpl = tpl.replace(/__DEV_SECTION_ATTRS__/g, devAttrs);
     res.setHeader("Content-Security-Policy", buildAdminPageCsp(nonce));
     res.type("html").send(tpl.replace(/__CSP_NONCE__/g, nonce));
   } catch (e) {
@@ -1319,6 +1325,15 @@ app.post('/api/channels/events', loadTenant, async (req, res) => {
         metadata: metadata ?? undefined,
       },
     });
+    await writeAudit(prisma, req, {
+      actorType: "channel",
+      actorId: String(externalUserId).slice(0, 200),
+      action: "channel.event.inbound",
+      resource: "channel_identity",
+      resourceId: identity.id,
+      outcome: "ok",
+      details: { channel: String(channel) },
+    });
     res.json({ ok: true, identityId: identity.id });
   } catch (err) {
     console.error("channel event failed", err.message);
@@ -1357,6 +1372,13 @@ app.post('/api/appointments', requirePlatformAuth, requirePermission("booking:wr
         metadata: { appointmentId: row.id },
       },
     });
+    await writeAudit(prisma, req, {
+      action: "appointment.create",
+      resource: "appointment",
+      resourceId: row.id,
+      outcome: "ok",
+      details: { leadId: row.leadId },
+    });
     res.status(201).json({ appointment: row });
   } catch (err) {
     res.status(500).json({ error: "appointment_create_failed" });
@@ -1385,6 +1407,13 @@ app.post('/api/quotes', requirePlatformAuth, requirePermission("quote:write"), l
         metadata: { quoteId: row.id },
       },
     });
+    await writeAudit(prisma, req, {
+      action: "quote.create",
+      resource: "quote",
+      resourceId: row.id,
+      outcome: "ok",
+      details: { leadId: row.leadId, amount: row.amount, currency: row.currency },
+    });
     res.status(201).json({ quote: row });
   } catch (err) {
     res.status(500).json({ error: "quote_create_failed" });
@@ -1405,6 +1434,14 @@ app.post('/api/compliance/consent', loadTenant, async (req, res) => {
         metadata: body.metadata ?? undefined,
       },
     });
+    await writeAudit(prisma, req, {
+      actorType: "end_user",
+      action: "consent.record",
+      resource: "consent_record",
+      resourceId: row.id,
+      outcome: "ok",
+      details: { purpose: row.purpose, granted: row.granted, source: row.source },
+    });
     res.status(201).json({ consent: row });
   } catch (err) {
     res.status(500).json({ error: "consent_write_failed" });
@@ -1417,6 +1454,16 @@ app.get('/api/compliance/export', requirePlatformAuth, requirePermission("audit:
     prisma.consentRecord.findMany({ where: { tenantId: req.tenantId, createdAt: { gte: since } } }),
     prisma.auditLog.findMany({ where: { tenantId: req.tenantId, createdAt: { gte: since } } }),
   ]);
+  await writeAudit(prisma, req, {
+    action: "compliance.export",
+    resource: "tenant_compliance_bundle",
+    outcome: "ok",
+    details: {
+      since: since.toISOString(),
+      consentCount: consents.length,
+      auditCount: audits.length,
+    },
+  });
   res.json({ tenantId: req.tenantId, since, consents, audits });
 });
 
@@ -1471,6 +1518,13 @@ app.post('/api/optimize/record', requirePlatformAuth, requirePermission("optimiz
         revenue: Number(revenue || 0),
       },
     });
+    await writeAudit(prisma, req, {
+      action: "optimize.record",
+      resource: "optimization_run",
+      resourceId: row.id,
+      outcome: "ok",
+      details: { experimentKey: row.experimentKey, variant: row.variant },
+    });
     res.json({ optimization: row });
   } catch (err) {
     res.status(500).json({ error: "optimization_record_failed" });
@@ -1517,6 +1571,13 @@ app.post('/api/reengagement/campaigns', requirePlatformAuth, requirePermission("
       },
     });
 
+    await writeAudit(prisma, req, {
+      action: "campaign.create",
+      resource: "reengagement_campaign",
+      resourceId: row.id,
+      outcome: "ok",
+      details: { name: row.name, channel: row.channel, dispatchedWebhooks: dispatched },
+    });
     res.status(201).json({ campaign: row, dispatchedWebhooks: dispatched });
   } catch (err) {
     res.status(500).json({ error: "campaign_create_failed" });
@@ -1539,6 +1600,13 @@ app.post('/api/benchmarks/run', requirePlatformAuth, requirePermission("benchmar
         score,
         winner: score >= 0 ? "candidate" : "baseline",
       },
+    });
+    await writeAudit(prisma, req, {
+      action: "benchmark.run",
+      resource: "benchmark_run",
+      resourceId: row.id,
+      outcome: "ok",
+      details: { name: row.name, winner: row.winner },
     });
     res.status(201).json({ benchmark: row });
   } catch (err) {
@@ -1572,6 +1640,12 @@ app.post('/api/onboarding/start', requirePlatformAuth, requirePermission("onboar
       status: "started",
     },
   });
+  await writeAudit(prisma, req, {
+    action: "onboarding.start",
+    resource: "onboarding_session",
+    resourceId: row.id,
+    outcome: "ok",
+  });
   res.status(201).json({ onboarding: row });
 });
 
@@ -1592,6 +1666,13 @@ app.post('/api/onboarding/:id/step', requirePlatformAuth, requirePermission("onb
       status: progress >= 100 ? "completed" : "started",
       completedAt: progress >= 100 ? new Date() : null,
     },
+  });
+  await writeAudit(prisma, req, {
+    action: "onboarding.step",
+    resource: "onboarding_session",
+    resourceId: updated.id,
+    outcome: "ok",
+    details: { step, progress: updated.progress, status: updated.status },
   });
   res.json({ onboarding: updated });
 });
@@ -1643,6 +1724,15 @@ app.post("/api/integrations/v1/inbound/:provider", requireTenantApiKey, async (r
     },
   });
 
+  await writeAudit(prisma, req, {
+    actorType: "api_client",
+    actorId: "integration_inbound",
+    action: "integration.inbound",
+    resource: "integration_event",
+    outcome: "ok",
+    details: { provider: out.provider, type: out.type },
+  });
+
   res.status(202).json({
     ok: true,
     accepted: { type: out.type, provider: out.provider },
@@ -1655,8 +1745,20 @@ app.post('/api/integrations/webhook-test', requirePlatformAuth, requirePermissio
   if (!endpoint) return res.status(400).json({ error: "endpoint_required" });
   try {
     const out = await sendGenericWebhook(String(endpoint), { tenantId: req.tenantId, ...payload }, String(secret || ""));
+    await writeAudit(prisma, req, {
+      action: "webhook.test",
+      resource: "outbound_webhook_test",
+      outcome: out.ok ? "ok" : "fail",
+      details: { httpStatus: out.status, endpointPreview: String(endpoint).slice(0, 160) },
+    });
     res.json({ ok: out.ok, status: out.status });
   } catch (err) {
+    await writeAudit(prisma, req, {
+      action: "webhook.test",
+      resource: "outbound_webhook_test",
+      outcome: "fail",
+      details: { error: String(err?.message || err).slice(0, 500) },
+    });
     res.status(502).json({ error: "webhook_failed", message: err.message });
   }
 });
@@ -1686,15 +1788,26 @@ app.get('/sso/callback', authLimiter, async (req, res) => {
     });
 
     // Redirect to the main app with the tenant context
-    const slug = result.tenant?.slug || '';
-    await writeAudit(prisma, req, {
-      actorType: "platform_user",
-      actorId: String(result.user?.id || ""),
-      action: "sso.callback",
-      resource: "platform_token",
-      outcome: "ok",
-      details: { slug },
-    });
+    const slug = result.tenant?.slug || "";
+    let auditTenantId = null;
+    if (slug) {
+      const tr = await prisma.tenant.findFirst({
+        where: { OR: [{ subdomain: slug }, { id: slug }] },
+        select: { id: true },
+      });
+      auditTenantId = tr?.id || null;
+    }
+    if (auditTenantId) {
+      await writeAudit(prisma, req, {
+        tenantId: auditTenantId,
+        actorType: "platform_user",
+        actorId: String(result.user?.id || ""),
+        action: "sso.callback",
+        resource: "platform_token",
+        outcome: "ok",
+        details: { slug },
+      });
+    }
     res.redirect(`/?tenant=${encodeURIComponent(slug)}`);
   } catch (err) {
     console.error('[SSO callback] Error:', err);
@@ -1706,7 +1819,7 @@ app.get('/sso/callback', authLimiter, async (req, res) => {
 app.get('/', async (_req, res, next) => {
   try {
     const html = await fsp.readFile(path.join(__dirname, "templates", "chat.html"), "utf8");
-    res.setHeader("Content-Security-Policy", EMBED_PAGE_CSP);
+    res.setHeader("Content-Security-Policy", buildEmbedPageCsp());
     res.type("html").send(html);
   } catch (e) {
     next(e);

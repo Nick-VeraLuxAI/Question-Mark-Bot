@@ -8,7 +8,9 @@
     "worker": "node workers/queueWorker.js",
     "test": "node --test tests/**/*.test.js",
     "test:integration": "node --test tests/integration/**/*.test.js",
-    "smoke:prod": "node smoke-readiness.js"
+    "smoke:prod": "node smoke-readiness.js",
+    "audit:ci": "npm audit --audit-level=critical",
+    "audit:report": "npm audit --audit-level=high || true"
   },
   "dependencies": {
     "@prisma/client": "^6.14.0",

@@ -26,14 +26,14 @@ This document maps what this **repository** implements (technical controls) vs w
 
 ### Content-Security-Policy (implemented)
 
-- **Chat shell** (`GET /`): Template `templates/chat.html` + external `solomon.css` / `solomon.js`. Header uses **`EMBED_PAGE_CSP`** (`script-src 'self'`, `style-src 'self' https://fonts.googleapis.com`, `frame-ancestors *` for iframe embeds).
+- **Chat shell** (`GET /`): Template `templates/chat.html` + external `solomon.css` / `solomon.js`. Header uses **`buildEmbedPageCsp()`** (`script-src 'self'`, …, **`frame-ancestors`** from env **`CSP_EMBED_FRAME_ANCESTORS`** or `*` by default for iframe embeds).
 - **Admin** (`GET /admin`): Template `templates/admin.html` + external `admin.css` / `admin.js`. Header uses a **per-request `script-src 'nonce-…'`** matching the `nonce` on the script tag (`utils/csp.js` + `buildAdminPageCsp`).
 - **Direct URL gap**: Do not expose duplicate HTML under `public/`; shells live only under `templates/` so `/index.html` is not served as a bypass.
 
 ### Known gaps (plan remediation)
 
-- **Tighter embed policy**: If you can pin parent origins, replace `frame-ancestors *` with an allowlist.
-- **Bearer token in `localStorage`** (`/admin` dev helper): **XSS-sensitive**. Discouraged in production; prefer SSO cookie only.
+- **Tighter embed policy**: Set **`CSP_EMBED_FRAME_ANCESTORS`** to pin parent origins when known.
+- **Bearer token in `localStorage`** (`/admin` dev helper): **XSS-sensitive**; panel is **hidden in production** unless **`ALLOW_ADMIN_BEARER_DEV_TOOLS=1`**.
 - **Penetration test / dependency scanning**: Run `npm audit`, SCA, and periodic pentests outside this repo.
 - **Backups, DR, IR playbooks**: Organizational; document RTO/RPO and test restores.
 
@@ -50,7 +50,22 @@ These criteria depend heavily on **hosting**, **contracts**, and **data handling
 
 ---
 
-## 3. Evidence pack (what auditors ask for)
+## 3. SOC 2 Type II (operating effectiveness)
+
+**Type II** is not a feature flag. Over **3–12 months** you must **operate** controls (access reviews, change management, incidents, vendor reviews, backups) and keep **evidence**.
+
+Use **[`soc2-type2-operating-program.md`](./soc2-type2-operating-program.md)** as the recurring calendar and audit-packet checklist. CI in **`.github/workflows/ci.yml`** supports **change-management** evidence (tests + critical dependency gate).
+
+### Technical additions in-app (audit / correlation)
+
+- **`X-Request-Id`** — middleware sets/propagates a correlation id; **`AuditLog.details.requestId`** links events to logs.
+- **Broader `writeAudit` coverage** — appointments, quotes, consent, compliance export, optimization, campaigns, benchmarks, onboarding steps, integration inbound, webhook test, channel inbound; **SSO callback** audit now persists when the tenant resolves in DB.
+- **Embed CSP** — optional **`CSP_EMBED_FRAME_ANCESTORS`** (see `utils/csp.js`) to replace `frame-ancestors *` when you can list parent origins.
+- **Admin Bearer panel** — hidden in **production** unless **`ALLOW_ADMIN_BEARER_DEV_TOOLS=1`**.
+
+---
+
+## 4. Evidence pack (what auditors ask for)
 
 Prepare **outside** the codebase:
 
@@ -63,6 +78,6 @@ Prepare **outside** the codebase:
 
 ---
 
-## 4. Summary
+## 5. Summary
 
-This app can **support** a SOC 2 program with **RBAC for sensitive config**, **audit logging**, **CSRF for cookie-based operator sessions**, **security headers**, and **HSTS** — but **SOC 2 compliance is an organizational attestation**, not a property of this repo alone. Use this file as a starting checklist with your compliance advisor and auditor.
+This app can **support** a SOC 2 program (including **Type II** preparation) with **RBAC**, **expanded audit logging**, **request correlation**, **CSRF for cookie-based operator sessions**, **security headers**, **HSTS**, **CI gates**, and **configurable embed CSP** — but **SOC 2 compliance is an organizational attestation**, not a property of this repo alone. Use **`soc2-readiness.md`** + **`soc2-type2-operating-program.md`** with your compliance advisor and auditor.

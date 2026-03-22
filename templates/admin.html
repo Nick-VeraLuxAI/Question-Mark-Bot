@@ -143,7 +143,7 @@
     <p class="muted mt-2">
       Auth: platform SSO cookie from <code>/sso/callback</code>. Cookie sessions require a CSRF token (fetched automatically before each change). For local dev you may use a Bearer token instead.
     </p>
-    <section class="panel" id="dev-section">
+    <section class="panel" id="dev-section" __DEV_SECTION_ATTRS__>
       <h2>Developer</h2>
       <p class="muted dev-warn">
         Storing Bearer tokens in the browser is an <strong>XSS risk</strong> and is discouraged for production / SOC 2; prefer SSO only.
