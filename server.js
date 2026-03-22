@@ -3,7 +3,6 @@ const express = require('express');
 const fsp = require("fs").promises;
 const path = require('path');
 const { randomUUID, randomBytes, createHash } = require('crypto');
-const nodemailer = require('nodemailer');
 const OpenAI = require('openai');
 const { google } = require('googleapis');
 const cookieParser = require('cookie-parser');
@@ -11,7 +10,8 @@ const cookieParser = require('cookie-parser');
 const cors = require('cors');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
-const { encrypt, decrypt, isEncrypted, hasKey } = require('./utils/kms');
+const { encrypt, hasKey } = require('./utils/kms');
+const { materializeTenantSecrets } = require("./utils/tenantSecrets");
 const { platformSSOMiddleware } = require('./middleware/platformSSO');
 const { requirePermission } = require("./middleware/rbac");
 const { applyGuardrails } = require("./utils/guardrails");
@@ -23,7 +23,9 @@ const { evaluateMetricAlerts } = require("./services/alerts");
 const { chooseModel, enforceMonthlyCap } = require("./utils/modelPolicy");
 const { loadPromptBundle } = require("./utils/promptManager");
 const { scoreLead } = require("./utils/leadScoring");
-const { enqueue } = require("./utils/jobQueue");
+const { enqueue, closeAllQueues } = require("./utils/jobQueue");
+const { quitRedisClients } = require("./utils/redis");
+const { validateProductionBoot } = require("./utils/bootValidate");
 const { sendGenericWebhook } = require("./utils/webhook");
 const {
   EventType,
@@ -31,48 +33,13 @@ const {
   listEventTypes,
 } = require("./integrations/domain");
 const { emitIntegrationEvent } = require("./services/outboundEvents");
+const { enqueueLeadNotificationEmail } = require("./services/leadEmailQueue");
 const { createRequireTenantApiKey } = require("./middleware/tenantApiKey");
 const { normalizeInbound, listAdapters } = require("./integrations/adapters");
 const PROMPTS_DIR = process.env.PROMPTS_DIR || "prompts/tenants";
 const DEFAULT_TENANT = (process.env.DEFAULT_TENANT || "default").toLowerCase();
 const HOT = process.env.HOT_RELOAD_PROMPTS === "1";
 const cache = new Map(); // key=abs path -> contents
-
-// NEW: normalize/decrypt sensitive tenant fields for runtime use
-function materializeTenantSecrets(t) {
-  if (!t) return t;
-  const out = { ...t };
-
-  // Only decrypt if the value was stored encrypted
-  try {
-    if (out.smtpPass && isEncrypted(out.smtpPass)) {
-      out.smtpPass = decrypt(out.smtpPass);
-    }
-  } catch {}
-
-  try {
-    if (out.openaiKey && isEncrypted(out.openaiKey)) {
-      out.openaiKey = decrypt(out.openaiKey);
-    }
-  } catch {}
-
-  // googleTokens may be: encrypted string, plain JSON string, or already an object
-  try {
-    const tok = out.googleTokens;
-    if (typeof tok === 'string') {
-      if (isEncrypted(tok)) {
-        out.googleTokens = JSON.parse(decrypt(tok));
-      } else {
-        try { out.googleTokens = JSON.parse(tok); } catch {}
-      }
-    }
-  } catch {}
-
-  return out;
-}
-
-
-
 
 // ---------- Tenant resolver (SSO → header → query → subdomain → DEFAULT_TENANT) ----------
 function resolveTenantSlug(req) {
@@ -96,6 +63,35 @@ function resolveTenantSlug(req) {
   return (process.env.DEFAULT_TENANT || "default").toLowerCase();
 }
 
+function normalizeEmbedTheme(v) {
+  const x = String(v || "").toLowerCase();
+  return x === "light" || x === "dark" ? x : "auto";
+}
+
+const BRANDING_COLUMNS = [
+  "brandColor",
+  "brandHover",
+  "botBg",
+  "botText",
+  "userBg",
+  "userText",
+  "glassBg",
+  "glassTop",
+  "blurPx",
+  "headerGlow",
+  "watermarkUrl",
+  "fontFamily",
+];
+
+/** Strip XSS-y patterns; keep values short enough for CSS / URLs. */
+function clipCssishToken(value, maxLen = 600) {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  const t = String(value).trim().slice(0, maxLen);
+  if (!t) return null;
+  if (/javascript:/i.test(t) || /<\/script/i.test(t) || /data:text\/html/i.test(t)) return null;
+  return t;
+}
 
 async function readFileCached(p) {
   if (!HOT && cache.has(p)) return cache.get(p);
@@ -191,7 +187,7 @@ app.use(cors({
       : callback(new Error('CORS origin not allowed'));
   },
   credentials: true,
-  methods: ['GET', 'POST', 'OPTIONS'],
+  methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Tenant', 'X-CSRF-Token'],
   maxAge: 600,
 }));
@@ -232,6 +228,13 @@ const authLimiter = createDistributedRateLimiter({
   windowMs: Number(process.env.AUTH_RATE_WINDOW_MS || 60_000),
   max: Number(process.env.AUTH_RATE_MAX || 20),
   keyPrefix: 'auth',
+  resolveTenant: resolveTenantSlug,
+});
+
+const publicEmbedLimiter = createDistributedRateLimiter({
+  windowMs: 60_000,
+  max: Number(process.env.PUBLIC_EMBED_RATE_MAX || 120),
+  keyPrefix: "embedcfg",
   resolveTenant: resolveTenantSlug,
 });
 
@@ -537,15 +540,16 @@ app.post('/message', messageLimiter, async (req, res) => {
     console.log('leadTags', tags);
 
     // Log to admin + DB
+    let leadRecord = null;
     try {
       await logLead({ name, email, phone, snippet: text, tags }, tenantId);
-      const lead = await prisma.lead.findFirst({
+      leadRecord = await prisma.lead.findFirst({
         where: { tenantId, email, phone },
         orderBy: { createdAt: "desc" },
       });
-      if (lead) {
+      if (leadRecord) {
         await prisma.lead.update({
-          where: { id: lead.id },
+          where: { id: leadRecord.id },
           data: {
             score: scored.score,
             status: scored.status,
@@ -585,57 +589,46 @@ app.post('/message', messageLimiter, async (req, res) => {
       }
     );
 
-// 📧 Per-tenant SMTP (Titan / generic)
-const port = Number(tenant?.smtpPort ?? 587);   // Titan: 587 STARTTLS
-const secure = port === 465;                    // 465 = SSL
+    const emailOutcome = await enqueueLeadNotificationEmail(prisma, {
+      tenantId,
+      leadId: leadRecord?.id,
+      payload: {
+        name,
+        email,
+        phone,
+        tags,
+        text,
+        score: scored.score,
+        status: scored.status,
+      },
+    });
 
-const transporter = nodemailer.createTransport({
-  host: tenant?.smtpHost || "smtp.titan.email",
-  port,
-  secure,                          // true for 465, false for 587
-  requireTLS: !secure,             // force STARTTLS when using 587
-  auth: {
-    user: tenant?.smtpUser,        // 'nick@veralux.ai'
-    pass: tenant?.smtpPass,        // Titan mailbox password (can include symbols)
-  },
-  tls: secure ? undefined : { minVersion: "TLSv1.2" },
-});
-
-// (optional) log once so you can confirm no more gmail host in logs
-console.log("SMTP cfg =>", {
-  host: tenant?.smtpHost || "smtp.titan.email",
-  port,
-  secure,
-  user: tenant?.smtpUser,
-  passLen: (tenant?.smtpPass || "").length
-});
-
-
-// One mailOptions definition only
-const mailOptions = {
-  from: tenant?.emailFrom || tenant?.smtpUser,   // should be the Gmail acct or verified alias
-  to:   tenant?.emailTo   || tenant?.smtpUser,
-  subject: `📥 New Consultation Request (${tenant?.name || tenantId})`,
-  text:
-    "New Lead Captured:\n\n" +
-    `Name: ${name}\nEmail: ${email}\nPhone: ${phone}\n` +
-    `Tags: ${tags.join(', ')}\n\n` +
-    `Original Message: ${text}`,
-};
-
-    transporter.sendMail(mailOptions)
-      .then(info => {
-        console.log("✅ Contact info sent via email:", info.response);
-        return Promise.all([
-          logSuccess(tenantId), // ← mark a successful request for the status widget
+    if (emailOutcome.skipped) {
+      let line;
+      if (emailOutcome.reason === "already_sent") {
+        line = `Lead captured; notification email already sent for this lead: ${name}`;
+      } else if (emailOutcome.reason === "smtp_not_configured") {
+        line = `Lead captured; notification email not sent (configure SMTP): ${name}`;
+      } else {
+        line = `Lead captured; notification email skipped (${emailOutcome.reason || "unknown"}): ${name}`;
+      }
+      await logEvent("server", line, tenantId).catch(() => {});
+    } else if (!emailOutcome.queued && emailOutcome.sync) {
+      const s = emailOutcome.sync;
+      if (s.skipped) {
+        await logEvent("server", `Lead captured; email skipped (${s.reason})`, tenantId).catch(() => {});
+      } else if (s.ok) {
+        console.log("Lead notification email sent (sync fallback):", s.response);
+        await Promise.all([
+          logSuccess(tenantId),
           logEvent("server", `Captured new lead: ${name}, ${email}, ${phone}`, tenantId),
           logEvent("ai", "AI replied with: consultation confirmation", tenantId),
-        ]);
-      })
-      .catch(error => {
-        console.error("❌ Email failed to send:", error);
-        return logError("Email", `Email failed: ${error.message}`, tenantId);
-      });
+        ]).catch(() => {});
+      } else {
+        console.error("Lead notification email failed (sync fallback):", s.error);
+        await logError("Email", `Lead email failed (sync): ${s.error}`, tenantId);
+      }
+    }
 
     return res.json({
       reply: "Thanks, I've submitted your information to our team! We'll reach out shortly to schedule your consultation."
@@ -845,6 +838,32 @@ app.get('/api/ready', async (_req, res) => {
   } catch (err) {
     console.error('readiness check failed:', err.message);
     res.status(503).json({ status: 'not_ready', reason: 'database_unreachable' });
+  }
+});
+
+// Public embed hints (theme); rate-limited. No secrets.
+app.get("/api/public/embed-config", publicEmbedLimiter, async (req, res) => {
+  try {
+    const slug = resolveTenantSlug(req);
+    let tenant = await prisma.tenant.findFirst({
+      where: { OR: [{ subdomain: slug }, { id: slug }] },
+      select: { id: true, settings: true },
+    });
+    if (!tenant && slug !== DEFAULT_TENANT) {
+      tenant = await prisma.tenant.findFirst({
+        where: { OR: [{ subdomain: DEFAULT_TENANT }, { id: DEFAULT_TENANT }] },
+        select: { id: true, settings: true },
+      });
+    }
+    const settings =
+      tenant?.settings && typeof tenant.settings === "object" ? tenant.settings : {};
+    const appearance = settings.appearance && typeof settings.appearance === "object" ? settings.appearance : {};
+    const theme = normalizeEmbedTheme(appearance.theme);
+    res.set("Cache-Control", "public, max-age=60");
+    res.json({ tenantId: tenant?.id ?? null, theme });
+  } catch (e) {
+    console.error("embed-config", e);
+    res.status(500).json({ error: "embed_config_failed" });
   }
 });
 
@@ -1099,6 +1118,127 @@ app.delete("/api/integrations/webhooks/:id", authLimiter, requirePlatformAuth, r
     res.status(500).json({ error: "webhook_delete_failed" });
   }
 });
+
+app.get(
+  "/api/integrations/branding",
+  requirePlatformAuth,
+  requirePermission("config:read"),
+  loadTenant,
+  async (req, res) => {
+    try {
+      const t = req.tenant;
+      if (!t) return res.status(404).json({ error: "tenant_not_found" });
+      const branding = t.branding && typeof t.branding === "object" ? t.branding : {};
+      const settings = t.settings && typeof t.settings === "object" ? t.settings : {};
+      await writeAudit(prisma, req, {
+        action: "branding.read",
+        resource: "tenant_branding",
+        outcome: "ok",
+        details: { tenantId: t.id },
+      });
+      res.json({
+        tenantId: t.id,
+        brandColor: t.brandColor,
+        brandHover: t.brandHover,
+        botBg: t.botBg,
+        botText: t.botText,
+        userBg: t.userBg,
+        userText: t.userText,
+        glassBg: t.glassBg,
+        glassTop: t.glassTop,
+        blurPx: t.blurPx,
+        headerGlow: t.headerGlow,
+        watermarkUrl: t.watermarkUrl,
+        fontFamily: t.fontFamily,
+        branding,
+        appearance: (() => {
+          const app =
+            settings.appearance && typeof settings.appearance === "object" ? settings.appearance : {};
+          return { ...app, theme: normalizeEmbedTheme(app.theme) };
+        })(),
+      });
+    } catch (err) {
+      console.error("branding read failed", err);
+      res.status(500).json({ error: "branding_read_failed" });
+    }
+  }
+);
+
+app.patch(
+  "/api/integrations/branding",
+  authLimiter,
+  requirePlatformAuth,
+  requirePermission("config:write"),
+  loadTenant,
+  async (req, res) => {
+    try {
+      const t = req.tenant;
+      if (!t) return res.status(404).json({ error: "tenant_not_found" });
+      const body = req.body || {};
+      const data = {};
+
+      for (const key of BRANDING_COLUMNS) {
+        if (!Object.prototype.hasOwnProperty.call(body, key)) continue;
+        const raw = body[key];
+        if (raw === "" || raw === null) {
+          data[key] = null;
+          continue;
+        }
+        const v = clipCssishToken(raw, key === "headerGlow" ? 1200 : 600);
+        data[key] = v;
+      }
+
+      if (body.branding !== undefined && body.branding !== null && typeof body.branding === "object") {
+        const cur = t.branding && typeof t.branding === "object" ? { ...t.branding } : {};
+        for (const [k, v] of Object.entries(body.branding)) {
+          if (typeof v === "string") cur[k] = clipCssishToken(v, 2000);
+          else if (typeof v === "number" && Number.isFinite(v)) cur[k] = v;
+          else if (typeof v === "boolean") cur[k] = v;
+        }
+        data.branding = cur;
+      }
+
+      if (body.appearance !== undefined && body.appearance !== null && typeof body.appearance === "object") {
+        const curSettings = t.settings && typeof t.settings === "object" ? { ...t.settings } : {};
+        const curApp =
+          curSettings.appearance && typeof curSettings.appearance === "object"
+            ? { ...curSettings.appearance }
+            : {};
+        const nextApp = { ...curApp };
+        for (const [k, v] of Object.entries(body.appearance)) {
+          if (k === "theme") {
+            nextApp.theme = normalizeEmbedTheme(v);
+          } else if (typeof v === "string") {
+            nextApp[k] = clipCssishToken(v, 240);
+          } else if (typeof v === "number" && Number.isFinite(v)) {
+            nextApp[k] = v;
+          } else if (typeof v === "boolean") {
+            nextApp[k] = v;
+          }
+        }
+        nextApp.theme = normalizeEmbedTheme(nextApp.theme);
+        curSettings.appearance = nextApp;
+        data.settings = curSettings;
+      }
+
+      if (Object.keys(data).length === 0) {
+        return res.status(400).json({ error: "no_valid_fields" });
+      }
+
+      await prisma.tenant.update({ where: { id: t.id }, data });
+      await writeAudit(prisma, req, {
+        action: "branding.update",
+        resource: "tenant_branding",
+        outcome: "ok",
+        details: { tenantId: t.id, fields: Object.keys(data) },
+      });
+      res.json({ ok: true });
+    } catch (err) {
+      console.error("branding update failed", err);
+      res.status(500).json({ error: "branding_update_failed" });
+    }
+  }
+);
 
 // ---- Human handoff cockpit API ----
 app.post('/api/handoff/sessions', requirePlatformAuth, requirePermission("handoff:write"), loadTenant, async (req, res) => {
@@ -1689,9 +1829,22 @@ if (process.env.ENABLE_HEARTBEAT === '1') {
 // ----------------- Server startup -----------------
 const PORT = process.env.PORT || 8080;
 if (require.main === module) {
-  app.listen(PORT, () => {
+  validateProductionBoot();
+  const server = app.listen(PORT, () => {
     console.log(`✅ Solomon backend running on port ${PORT}`);
   });
+
+  async function shutdown(signal) {
+    console.log(`${signal}: shutting down…`);
+    await new Promise((resolve) => server.close(() => resolve()));
+    await closeAllQueues().catch(() => {});
+    await quitRedisClients().catch(() => {});
+    await prisma.$disconnect().catch(() => {});
+    process.exit(0);
+  }
+
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
 }
 
 module.exports = { app };

@@ -6,6 +6,7 @@
   const configLine = $("config-line");
   const whEvents = $("wh-events");
   const whTbody = $("wh-tbody");
+  const brandingStatus = $("branding-status");
 
   const TENANT_KEY = "solomon_dashboard_tenant";
   const TOKEN_KEY = "solomon_dashboard_bearer";
@@ -173,6 +174,77 @@
     });
   }
 
+  function val(id) {
+    const el = $(id);
+    return el ? el.value.trim() : "";
+  }
+
+  function setBrandingField(id, v) {
+    const el = $(id);
+    if (el) el.value = v == null || v === "" ? "" : String(v);
+  }
+
+  async function loadBranding() {
+    if (!brandingStatus) return;
+    brandingStatus.textContent = "";
+    const { ok, status, body } = await api("/api/integrations/branding");
+    if (status === 401) return;
+    if (!ok) {
+      brandingStatus.textContent = "Could not load branding: " + (body?.error || status);
+      return;
+    }
+    const ap = body.appearance || {};
+    const th = $("br-theme");
+    if (th) th.value = ap.theme === "light" || ap.theme === "dark" ? ap.theme : "auto";
+    setBrandingField("br-brand", body.brandColor);
+    setBrandingField("br-brand-hover", body.brandHover);
+    setBrandingField("br-bot-bg", body.botBg);
+    setBrandingField("br-bot-text", body.botText);
+    setBrandingField("br-user-bg", body.userBg);
+    setBrandingField("br-user-text", body.userText);
+    setBrandingField("br-glass-bg", body.glassBg);
+    setBrandingField("br-glass-top", body.glassTop);
+    setBrandingField("br-blur", body.blurPx);
+    setBrandingField("br-font", body.fontFamily);
+    setBrandingField("br-watermark", body.watermarkUrl);
+    setBrandingField("br-header-glow", body.headerGlow);
+  }
+
+  async function saveBranding() {
+    if (!brandingStatus) return;
+    const themeEl = $("br-theme");
+    const payload = {
+      appearance: { theme: (themeEl && themeEl.value) || "auto" },
+    };
+    const pairs = [
+      ["br-brand", "brandColor"],
+      ["br-brand-hover", "brandHover"],
+      ["br-bot-bg", "botBg"],
+      ["br-bot-text", "botText"],
+      ["br-user-bg", "userBg"],
+      ["br-user-text", "userText"],
+      ["br-glass-bg", "glassBg"],
+      ["br-glass-top", "glassTop"],
+      ["br-blur", "blurPx"],
+      ["br-font", "fontFamily"],
+      ["br-watermark", "watermarkUrl"],
+      ["br-header-glow", "headerGlow"],
+    ];
+    for (const [id, key] of pairs) {
+      const s = val(id);
+      if (s) payload[key] = s;
+    }
+    const r = await api("/api/integrations/branding", {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    });
+    if (!r.ok) {
+      brandingStatus.textContent = "Save failed: " + (r.body?.error || r.status);
+      return;
+    }
+    brandingStatus.textContent = "Saved. Embed clients may take up to ~1 minute to pick up theme (CDN/browser cache).";
+  }
+
   function selectedEvents() {
     const boxes = whEvents.querySelectorAll('input[name="ev"]:checked');
     return Array.from(boxes).map((b) => b.value);
@@ -226,6 +298,8 @@
     $("btn-reload").addEventListener("click", loadAll);
     $("btn-rotate-key").addEventListener("click", rotateKey);
     $("btn-add-webhook").addEventListener("click", addWebhook);
+    const btnBr = $("btn-save-branding");
+    if (btnBr) btnBr.addEventListener("click", saveBranding);
     $("btn-save-token").addEventListener("click", () => {
       const v = $("dev-token").value.trim();
       if (v) localStorage.setItem(TOKEN_KEY, v);
@@ -243,6 +317,7 @@
 
   function loadAll() {
     loadStatsAndConfig();
+    loadBranding();
     loadWebhookMeta().then(loadWebhooks);
   }
 

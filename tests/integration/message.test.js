@@ -16,6 +16,27 @@ function mockApp({ blockPromptInjection = "0" } = {}) {
     constructor() {
       this.tenant = {
         findFirst: async ({ where }) => {
+          if (where?.id === "default") {
+            return {
+              id: "default",
+              name: "Default Tenant",
+              subdomain: "default",
+              plan: "basic",
+              settings: {},
+              openaiKey: "sk-test",
+              smtpHost: "smtp.test",
+              smtpPort: 587,
+              smtpUser: "from@test.com",
+              smtpPass: "pass",
+              emailFrom: "from@test.com",
+              emailTo: "to@test.com",
+              prompts: {
+                system: "You are a helpful assistant.",
+                policy: "Be accurate.",
+                voice: "Be concise.",
+              },
+            };
+          }
           const wanted = where?.OR?.find(Boolean);
           const slug = wanted?.subdomain || wanted?.id || "default";
           if (slug !== "default") return null;
@@ -54,6 +75,11 @@ function mockApp({ blockPromptInjection = "0" } = {}) {
       this.tagDictionary = { findMany: async () => [] };
       this.lead = {
         findFirst: async () => ({ id: "lead1" }),
+        findUnique: async ({ where }) => ({
+          id: where.id,
+          tenantId: "default",
+          notificationEmailSentAt: null,
+        }),
         update: async () => ({}),
         count: async () => 1,
       };
@@ -80,6 +106,9 @@ function mockApp({ blockPromptInjection = "0" } = {}) {
     createTransport: () => ({
       sendMail: async () => ({ response: "mocked-ok" }),
     }),
+  });
+  mock(path.join(ROOT, "utils", "jobQueue.js"), {
+    enqueue: async () => false,
   });
   mock("openai", class OpenAI {
     constructor() {

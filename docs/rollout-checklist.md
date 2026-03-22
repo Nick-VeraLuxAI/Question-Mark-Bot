@@ -52,6 +52,7 @@ Roll out in this order, enabling one tenant cohort at a time.
   - normal chat flow
   - contact flow (lead capture)
   - blocked injection test case (when enabled)
+- **Lead notification email**: with Redis up, the worker must run so `lead-notification-email` jobs send (see `docs/branding-and-appearance.md`). Without Redis, the API falls back to a single synchronous send attempt.
 - Worker queue depth remains stable under load.
 - Alerts are created for synthetic threshold breach tests.
 

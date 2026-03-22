@@ -23,4 +23,27 @@ async function writeAudit(prisma, req, data) {
   }
 }
 
-module.exports = { writeAudit };
+/** Audit from background workers (no HTTP request). */
+async function writeSystemAudit(prisma, tenantId, data) {
+  try {
+    if (!tenantId) return;
+    await prisma.auditLog.create({
+      data: {
+        tenantId,
+        actorType: "system",
+        actorId: String(data.actorId || "queue-worker"),
+        action: String(data.action || "unknown"),
+        resource: String(data.resource || "unknown"),
+        resourceId: data.resourceId ? String(data.resourceId) : undefined,
+        outcome: String(data.outcome || "ok"),
+        ip: "internal",
+        userAgent: String(data.userAgent || "events-worker"),
+        details: data.details ?? undefined,
+      },
+    });
+  } catch (err) {
+    console.warn("system audit failed:", err.message);
+  }
+}
+
+module.exports = { writeAudit, writeSystemAudit };

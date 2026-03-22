@@ -88,6 +88,9 @@
       grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
       gap: 0.75rem;
     }
+    .branding-grid {
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    }
     .stat {
       padding: 0.85rem 1rem;
       background: #faf9f7;
@@ -113,6 +116,15 @@
     .form-row { margin-bottom: 0.75rem; }
     .form-row label { display: block; font-size: 0.75rem; color: var(--muted); margin-bottom: 0.25rem; }
     .form-row input { width: 100%; max-width: 420px; }
+    .form-row input.wide { max-width: 100%; }
+    select {
+      padding: 0.45rem 0.65rem;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 0.875rem;
+      background: #fff;
+      min-width: 200px;
+    }
     .chips { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.35rem; }
     .chips label { display: inline-flex; align-items: center; gap: 0.25rem; font-size: 0.75rem; color: var(--text); cursor: pointer; }
     .muted { color: var(--muted); font-size: 0.8125rem; }

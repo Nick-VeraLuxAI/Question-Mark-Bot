@@ -8,12 +8,15 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <noscript><link id="env-css" rel="stylesheet" href="/env.css?v=1.0.1" /></noscript>
-  <link rel="stylesheet" href="/solomon.css?v=2" />
+  <link rel="stylesheet" href="/solomon.css?v=3" />
 </head>
 <body>
   <div class="container">
     <div class="canvas-root">
-      <div class="header">Solomon</div>
+      <div class="header">
+        <span class="header-title">Solomon</span>
+        <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Cycle theme: light, dark, or match system" title="Theme">◐</button>
+      </div>
       <div class="canvas-scroll" id="canvas-scroll">
         <div class="canvas-column">
           <div class="intro-canvas" id="intro-card" role="region" aria-label="Welcome">
@@ -37,6 +40,6 @@
       </div>
     </div>
   </div>
-  <script src="/solomon.js?v=2" defer></script>
+  <script src="/solomon.js?v=3" defer></script>
 </body>
 </html>

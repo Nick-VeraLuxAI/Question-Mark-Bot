@@ -1,4 +1,5 @@
 (() => {
+  const THEME_KEY = "solomon_theme_user"; // '' | light | dark | auto (empty = follow tenant + system)
   const qs = new URLSearchParams(location.search);
   const envCss = document.createElement("link");
   envCss.id = "env-css";
@@ -17,6 +18,50 @@
     history.replaceState(null, '', location.pathname + '?' + qs.toString());
   }
   if (TENANT) localStorage.setItem('tenant', TENANT);
+
+  let tenantDefaultTheme = "auto";
+  function effectiveTheme() {
+    const user = localStorage.getItem(THEME_KEY);
+    if (user === "light" || user === "dark") return user;
+    if (tenantDefaultTheme === "light" || tenantDefaultTheme === "dark") return tenantDefaultTheme;
+    return "auto";
+  }
+
+  function applyThemeToDom() {
+    const mode = effectiveTheme();
+    const root = document.documentElement;
+    if (mode === "light") root.setAttribute("data-theme", "light");
+    else if (mode === "dark") root.setAttribute("data-theme", "dark");
+    else root.removeAttribute("data-theme");
+  }
+
+  function themeToggleLabel(mode) {
+    if (mode === "light") return { glyph: "☀", title: "Light theme (click for dark)" };
+    if (mode === "dark") return { glyph: "☾", title: "Dark theme (click for system)" };
+    return { glyph: "◐", title: "Match system (click for light)" };
+  }
+
+  function refreshThemeToggle(btn) {
+    if (!btn) return;
+    const { glyph, title } = themeToggleLabel(effectiveTheme());
+    btn.textContent = glyph;
+    btn.title = title;
+  }
+
+  (async function loadEmbedConfig() {
+    try {
+      const u = new URL("/api/public/embed-config", location.origin);
+      if (TENANT) u.searchParams.set("tenant", TENANT);
+      const res = await fetch(u.toString(), { credentials: "omit" });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data && (data.theme === "light" || data.theme === "dark" || data.theme === "auto")) {
+        tenantDefaultTheme = data.theme;
+      }
+    } catch (_) {}
+    applyThemeToDom();
+    refreshThemeToggle(document.getElementById("theme-toggle"));
+  })();
 
   async function sendMessage(text) {
     const u = new URL('/message', location.origin);
@@ -41,6 +86,17 @@
   const input  = $('user-input');
   const typing = $('typing');
   const intro  = $('intro-card');
+  const themeBtn = $('theme-toggle');
+  if (themeBtn) {
+    themeBtn.addEventListener("click", () => {
+      const u = localStorage.getItem(THEME_KEY);
+      if (u === "light") localStorage.setItem(THEME_KEY, "dark");
+      else if (u === "dark") localStorage.removeItem(THEME_KEY);
+      else localStorage.setItem(THEME_KEY, "light");
+      applyThemeToDom();
+      refreshThemeToggle(themeBtn);
+    });
+  }
 
   function dismissIntro() {
     if (intro && !intro.hidden) {

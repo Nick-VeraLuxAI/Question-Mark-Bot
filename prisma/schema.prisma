@@ -133,6 +133,8 @@ model Lead {
   source    String?
   scoredAt  DateTime?
   createdAt DateTime @default(now())
+  /// Set when the tenant lead-notification email was delivered (queue or sync). Prevents duplicate sends on retries.
+  notificationEmailSentAt DateTime?
 
   tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 

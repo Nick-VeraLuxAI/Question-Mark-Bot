@@ -144,6 +144,7 @@ function createPrismaMock(state) {
       this.tagDictionary = { findMany: async () => [] };
       this.lead = {
         findFirst: async () => state.leads[0] || null,
+        findUnique: async ({ where }) => state.leads.find((x) => x.id === where.id) || null,
         update: async ({ where, data }) => {
           const i = state.leads.findIndex((x) => x.id === where.id);
           state.leads[i] = { ...state.leads[i], ...data };
@@ -575,6 +576,38 @@ test("RBAC enforcement denies viewer write access", async () => {
     title: "Consult",
     startsAt: new Date().toISOString(),
   });
+  assert.equal(res.status, 403);
+  cleanup();
+});
+
+test("GET /api/public/embed-config returns theme for tenant", async () => {
+  const { app, cleanup } = buildApp();
+  const res = await request(app).get("/api/public/embed-config?tenant=default");
+  assert.equal(res.status, 200);
+  assert.equal(res.body.tenantId, "default");
+  assert.equal(res.body.theme, "auto");
+  cleanup();
+});
+
+test("integrations branding: read and patch embed theme", async () => {
+  const { app, cleanup } = buildApp();
+  const get = await request(app).get("/api/integrations/branding?tenant=default");
+  assert.equal(get.status, 200);
+  assert.equal(get.body.appearance.theme, "auto");
+  const patch = await request(app)
+    .patch("/api/integrations/branding?tenant=default")
+    .send({ appearance: { theme: "dark" } });
+  assert.equal(patch.status, 200);
+  const get2 = await request(app).get("/api/integrations/branding?tenant=default");
+  assert.equal(get2.body.appearance.theme, "dark");
+  cleanup();
+});
+
+test("viewer cannot patch branding (config:write)", async () => {
+  const { app, cleanup } = buildApp({ role: "viewer" });
+  const res = await request(app)
+    .patch("/api/integrations/branding?tenant=default")
+    .send({ appearance: { theme: "light" } });
   assert.equal(res.status, 403);
   cleanup();
 });

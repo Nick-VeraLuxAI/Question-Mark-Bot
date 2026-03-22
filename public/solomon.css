@@ -18,6 +18,50 @@
       --block-gap: 1.35rem;
     }
 
+    @media (prefers-color-scheme: dark) {
+      html:not([data-theme]) {
+        --brand: #b8c4a8;
+        --brandHover: #c8d4b8;
+        --glassBg: rgba(28, 27, 24, 0.92);
+        --glassTop: rgba(36, 34, 30, 0.88);
+        --blur: 12px;
+        --botBg: #2a2824;
+        --botText: #ece8e0;
+        --userBg: #9a8b76;
+        --userText: #fdfcfa;
+        --borderColor: rgba(240, 234, 224, 0.14);
+        --headerGlow: radial-gradient(50% 50% at 50% 50%, rgba(184, 196, 168, 0.28) 0%, rgba(184, 196, 168, 0) 70%);
+      }
+    }
+
+    html[data-theme="dark"] {
+      --brand: #b8c4a8;
+      --brandHover: #c8d4b8;
+      --glassBg: rgba(28, 27, 24, 0.92);
+      --glassTop: rgba(36, 34, 30, 0.88);
+      --blur: 12px;
+      --botBg: #2a2824;
+      --botText: #ece8e0;
+      --userBg: #9a8b76;
+      --userText: #fdfcfa;
+      --borderColor: rgba(240, 234, 224, 0.14);
+      --headerGlow: radial-gradient(50% 50% at 50% 50%, rgba(184, 196, 168, 0.28) 0%, rgba(184, 196, 168, 0) 70%);
+    }
+
+    html[data-theme="light"] {
+      --brand: #6B705C;
+      --brandHover: #556052;
+      --glassBg: rgba(250, 248, 244, 0.88);
+      --glassTop: rgba(250, 248, 244, 0.78);
+      --blur: 10px;
+      --botBg: #F4F1EA;
+      --botText: #2C2C2C;
+      --userBg: #8A7B68;
+      --userText: #FFFFFF;
+      --borderColor: #D9D6CE;
+      --headerGlow: radial-gradient(50% 50% at 50% 50%, rgba(107, 112, 92, 0.35) 0%, rgba(107, 112, 92, 0) 70%);
+    }
+
     @keyframes canvas-block-in {
       from {
         opacity: 0;
@@ -83,6 +127,26 @@
         linear-gradient(168deg, #f6f4ef 0%, #ece9e3 42%, #e6e3dc 100%);
     }
 
+    @media (prefers-color-scheme: dark) {
+      html:not([data-theme]) .canvas-root {
+        background:
+          radial-gradient(ellipse 90% 55% at 50% -15%, color-mix(in srgb, var(--brand) 22%, transparent), transparent 52%),
+          linear-gradient(168deg, #1e1c19 0%, #242220 45%, #181614 100%);
+      }
+    }
+
+    html[data-theme="dark"] .canvas-root {
+      background:
+        radial-gradient(ellipse 90% 55% at 50% -15%, color-mix(in srgb, var(--brand) 22%, transparent), transparent 52%),
+        linear-gradient(168deg, #1e1c19 0%, #242220 45%, #181614 100%);
+    }
+
+    html[data-theme="light"] .canvas-root {
+      background:
+        radial-gradient(ellipse 90% 55% at 50% -15%, color-mix(in srgb, var(--brand) 12%, transparent), transparent 52%),
+        linear-gradient(168deg, #f6f4ef 0%, #ece9e3 42%, #e6e3dc 100%);
+    }
+
     .canvas-root::before {
       content: "";
       position: absolute;
@@ -106,14 +170,51 @@
       position: relative;
       z-index: 2;
       flex-shrink: 0;
-      text-align: center;
-      padding: 0.85rem 1rem 0.5rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0.85rem 2.5rem 0.5rem;
       font-family: var(--font-display);
       font-weight: 600;
       font-size: 0.95rem;
       letter-spacing: 0.08em;
       text-transform: uppercase;
       color: color-mix(in srgb, var(--botText) 72%, var(--brand));
+    }
+
+    .header-title {
+      text-align: center;
+    }
+
+    .theme-toggle {
+      position: absolute;
+      right: 0.65rem;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 2.1rem;
+      height: 2.1rem;
+      border-radius: 50%;
+      border: 1px solid color-mix(in srgb, var(--borderColor) 85%, transparent);
+      background: color-mix(in srgb, var(--glassTop) 75%, transparent);
+      color: var(--botText);
+      cursor: pointer;
+      font-size: 1rem;
+      line-height: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      transition: border-color 0.2s ease, transform 0.15s ease;
+    }
+
+    .theme-toggle:hover {
+      border-color: color-mix(in srgb, var(--brand) 45%, var(--borderColor));
+      transform: translateY(-50%) scale(1.05);
+    }
+
+    .theme-toggle:focus-visible {
+      outline: 2px solid var(--brand);
+      outline-offset: 2px;
     }
 
     .header::before {

@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/admin/admin.css?v=2" />
+  <link rel="stylesheet" href="/admin/admin.css?v=3" />
 </head>
 <body>
   <div class="wrap">
@@ -33,6 +33,73 @@
       <h2>Overview</h2>
       <div id="stats-grid" class="grid"></div>
       <p class="muted mt-1" id="config-line"></p>
+    </section>
+
+    <section class="panel" id="panel-branding">
+      <h2>Branding &amp; embed theme</h2>
+      <p class="muted">
+        Drives <code>/env.css</code> and the chat widget. Theme default for embeds: <strong>auto</strong> follows the visitor’s OS; visitors can still override with the in-widget control.
+      </p>
+      <div class="form-row">
+        <label for="br-theme">Default embed theme</label>
+        <select id="br-theme">
+          <option value="auto">Auto (system preference)</option>
+          <option value="light">Light</option>
+          <option value="dark">Dark</option>
+        </select>
+      </div>
+      <div class="grid branding-grid">
+        <div class="form-row">
+          <label for="br-brand">Brand color</label>
+          <input type="text" id="br-brand" placeholder="#6B705C" />
+        </div>
+        <div class="form-row">
+          <label for="br-brand-hover">Brand hover</label>
+          <input type="text" id="br-brand-hover" placeholder="#556052" />
+        </div>
+        <div class="form-row">
+          <label for="br-bot-bg">Bot bubble bg</label>
+          <input type="text" id="br-bot-bg" placeholder="#F4F1EA" />
+        </div>
+        <div class="form-row">
+          <label for="br-bot-text">Bot text</label>
+          <input type="text" id="br-bot-text" placeholder="#2C2C2C" />
+        </div>
+        <div class="form-row">
+          <label for="br-user-bg">User accent</label>
+          <input type="text" id="br-user-bg" placeholder="#8A7B68" />
+        </div>
+        <div class="form-row">
+          <label for="br-user-text">User bubble text</label>
+          <input type="text" id="br-user-text" placeholder="#FFFFFF" />
+        </div>
+        <div class="form-row">
+          <label for="br-glass-bg">Glass background</label>
+          <input type="text" id="br-glass-bg" placeholder="rgba(…)" />
+        </div>
+        <div class="form-row">
+          <label for="br-glass-top">Glass top</label>
+          <input type="text" id="br-glass-top" placeholder="rgba(…)" />
+        </div>
+        <div class="form-row">
+          <label for="br-blur">Blur</label>
+          <input type="text" id="br-blur" placeholder="10px" />
+        </div>
+        <div class="form-row">
+          <label for="br-font">Font family (CSS)</label>
+          <input type="text" id="br-font" placeholder="Inter, system-ui, sans-serif" />
+        </div>
+        <div class="form-row">
+          <label for="br-watermark">Watermark URL</label>
+          <input type="text" id="br-watermark" placeholder="https://…" />
+        </div>
+      </div>
+      <div class="form-row">
+        <label for="br-header-glow">Header glow (CSS gradient)</label>
+        <input type="text" id="br-header-glow" class="wide" placeholder="radial-gradient(…)" />
+      </div>
+      <button type="button" id="btn-save-branding">Save branding</button>
+      <p class="muted mt-1" id="branding-status"></p>
     </section>
 
     <section class="panel">
@@ -90,6 +157,6 @@
     </section>
   </div>
 
-  <script src="/admin/admin.js?v=2" defer nonce="__CSP_NONCE__"></script>
+  <script src="/admin/admin.js?v=3" defer nonce="__CSP_NONCE__"></script>
 </body>
 </html>
