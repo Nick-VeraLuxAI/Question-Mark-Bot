@@ -555,6 +555,17 @@ test("dashboard: webhook meta and list", async () => {
   cleanup();
 });
 
+test("viewer cannot provision tenants (tenants:provision)", async () => {
+  const { app, cleanup } = buildApp({ role: "viewer" });
+  const list = await request(app).get("/api/admin/tenants?tenant=default");
+  assert.equal(list.status, 403);
+  const create = await request(app)
+    .post("/api/admin/tenants?tenant=default")
+    .send({ slug: "acme", name: "Acme" });
+  assert.equal(create.status, 403);
+  cleanup();
+});
+
 test("viewer cannot mutate integration config (SOC2 RBAC)", async () => {
   const { app, cleanup } = buildApp({ role: "viewer" });
   const rot = await request(app).post("/api/keys/rotate?tenant=default").send({});

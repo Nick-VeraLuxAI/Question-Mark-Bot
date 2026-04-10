@@ -1,0 +1,109 @@
+# Local / single-host stack: PostgreSQL + Redis + API + BullMQ worker.
+# Copy .env.example to .env and set secrets. Compose overrides DATABASE_URL and REDIS_URL
+# to use the internal service hostnames.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: solomon
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-solomon_local_change_me}
+      POSTGRES_DB: solomon
+    volumes:
+      - solomon_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U solomon -d solomon"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - solomon_redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  migrate:
+    build: .
+    environment:
+      DATABASE_URL: postgresql://solomon:${POSTGRES_PASSWORD:-solomon_local_change_me}@postgres:5432/solomon
+      NODE_ENV: production
+      DEFAULT_TENANT: ${DEFAULT_TENANT:-default}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["sh", "-c", "npx prisma migrate deploy && npm run db:seed"]
+    restart: "no"
+
+  api:
+    build: .
+    ports:
+      - "${HOST_PORT:-8080}:8080"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://solomon:${POSTGRES_PASSWORD:-solomon_local_change_me}@postgres:5432/solomon
+      REDIS_URL: redis://redis:6379
+      NODE_ENV: production
+      PORT: "8080"
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://127.0.0.1:8080,http://localhost:8080}
+      DEFAULT_TENANT: ${DEFAULT_TENANT:-default}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -sf http://127.0.0.1:8080/api/ready | grep -q '\"status\":\"ready\"'",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  worker:
+    build: .
+    env_file:
+      - .env
+    ports:
+      - "${WORKER_HOST_PORT:-9090}:9090"
+    environment:
+      DATABASE_URL: postgresql://solomon:${POSTGRES_PASSWORD:-solomon_local_change_me}@postgres:5432/solomon
+      REDIS_URL: redis://redis:6379
+      NODE_ENV: production
+      WORKER_HEALTH_PORT: "9090"
+      DEFAULT_TENANT: ${DEFAULT_TENANT:-default}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    command: ["node", "workers/queueWorker.js"]
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "require('http').get('http://127.0.0.1:9090/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1));",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+volumes:
+  solomon_pgdata:
+  solomon_redisdata:

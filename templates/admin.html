@@ -7,14 +7,14 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/admin/admin.css?v=3" />
+  <link rel="stylesheet" href="/admin/admin.css?v=5" />
 </head>
 <body>
   <div class="wrap">
     <header>
       <div>
         <h1>Solomon dashboard</h1>
-        <p class="sub">Tenant stats, API key, and outbound webhooks</p>
+        <p class="sub">Tenant onboarding, stats, API keys, and outbound webhooks</p>
       </div>
       <div class="toolbar">
         <div>
@@ -28,6 +28,59 @@
     </header>
 
     <div id="auth-banner" class="banner" hidden></div>
+
+    <section class="panel" id="panel-onboarding">
+      <h2>Tenant onboarding</h2>
+      <p class="muted">
+        Create and check tenants from the dashboard (no CLI). Requires platform SSO with
+        <strong>operator</strong>, <strong>admin</strong>, or <strong>owner</strong>.
+        Chat uses global <code>OPENAI_API_KEY</code> unless you add a per-tenant key below.
+      </p>
+      <div class="form-row">
+        <label for="onb-slug">New tenant slug</label>
+        <input type="text" id="onb-slug" placeholder="acme" autocomplete="off" spellcheck="false" />
+      </div>
+      <div class="form-row">
+        <label for="onb-name">Display name</label>
+        <input type="text" id="onb-name" placeholder="Acme Corp" autocomplete="organization" />
+      </div>
+      <div class="form-row">
+        <label for="onb-plan">Plan</label>
+        <select id="onb-plan">
+          <option value="basic">basic</option>
+          <option value="pro">pro</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label><input type="checkbox" id="onb-use-global-openai" checked /> Use global OpenAI key (recommended if <code>OPENAI_API_KEY</code> is set)</label>
+      </div>
+      <div class="form-row">
+        <label for="onb-openai-key">Per-tenant OpenAI key (optional)</label>
+        <input type="password" id="onb-openai-key" placeholder="sk-…" autocomplete="off" disabled />
+      </div>
+      <div class="form-row">
+        <label><input type="checkbox" id="onb-skip-int-key" /> Skip integration API key (inbound integrations need a key)</label>
+      </div>
+      <div class="form-row">
+        <label><input type="checkbox" id="onb-bootstrap-prompts" checked /> Copy default prompt files into <code>prompts/tenants/&lt;slug&gt;/</code></label>
+      </div>
+      <div class="form-row">
+        <label><input type="checkbox" id="onb-force" /> Update existing tenant if slug already exists (metadata / keys per options)</label>
+      </div>
+      <button type="button" id="btn-onb-create">Create tenant</button>
+      <p class="muted mt-1" id="onb-status"></p>
+      <div id="onb-key-reveal" class="key-reveal" hidden></div>
+      <hr class="onb-hr" />
+      <p class="muted">After create, use the same slug below:</p>
+      <div class="form-row onb-actions">
+        <button type="button" class="secondary" id="btn-onb-verify">Verify readiness</button>
+        <button type="button" class="secondary" id="btn-onb-bootstrap">Bootstrap prompts only</button>
+        <button type="button" class="secondary" id="btn-onb-rotate-int">Rotate integration key</button>
+      </div>
+      <div id="onb-server-hints" class="banner onb-hints" hidden></div>
+      <p class="muted mt-1"><strong>Tenants in database</strong></p>
+      <ul id="onb-directory" class="onb-directory muted"></ul>
+    </section>
 
     <section class="panel" id="panel-stats">
       <h2>Overview</h2>
@@ -157,6 +210,6 @@
     </section>
   </div>
 
-  <script src="/admin/admin.js?v=3" defer nonce="__CSP_NONCE__"></script>
+  <script src="/admin/admin.js?v=5" defer nonce="__CSP_NONCE__"></script>
 </body>
 </html>

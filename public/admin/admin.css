@@ -109,6 +109,12 @@
       margin-bottom: 1.25rem;
     }
     .banner.error { background: #fdf2f2; border-color: #e8c4c4; color: #6a3a3a; }
+    .banner.warn { background: #fff8e6; border-color: #e8d49a; color: #5c4a2a; }
+    .banner.info { background: #eef6ff; border-color: #c4d8f0; color: #2a4a6a; }
+    .onb-hints { margin-top: 0.75rem; margin-bottom: 0.5rem; font-size: 0.8125rem; }
+    .onb-hints ul { margin: 0.35rem 0 0; padding-left: 1.25rem; }
+    .verify-out { white-space: pre-wrap; }
+    .verify-out.blocked { color: var(--danger); font-weight: 500; }
     table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; }
     th, td { text-align: left; padding: 0.5rem 0.4rem; border-bottom: 1px solid var(--border); vertical-align: top; }
     th { color: var(--muted); font-weight: 500; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; }
@@ -144,3 +150,28 @@
     .mt-2 { margin-top: 2rem; }
     .toolbar-end { align-self: flex-end; }
     .dev-warn { color: var(--danger); margin-top: 0; }
+    input[type="password"],
+    select {
+      padding: 0.45rem 0.65rem;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 0.875rem;
+      min-width: 140px;
+      background: #fff;
+    }
+    .onb-hr {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 1.25rem 0;
+    }
+    .onb-directory {
+      margin: 0.35rem 0 0;
+      padding-left: 1.25rem;
+    }
+    .onb-directory li { margin-bottom: 0.25rem; }
+    .onb-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      align-items: center;
+    }

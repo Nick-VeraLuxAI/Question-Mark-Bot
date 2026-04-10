@@ -17,6 +17,17 @@ const {
   logSuccess,
   logError,
 } = require("../adminClient");
+const {
+  validateWorkerProductionBoot,
+  logProductionBootWarnings,
+  logRuntimeModeHint,
+} = require("../utils/bootValidate");
+
+if (process.env.NODE_ENV !== "production") {
+  logRuntimeModeHint();
+}
+validateWorkerProductionBoot();
+logProductionBootWarnings();
 
 const prisma = new PrismaClient();
 

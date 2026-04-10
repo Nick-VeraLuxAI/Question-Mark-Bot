@@ -24,8 +24,12 @@ const { chooseModel, enforceMonthlyCap } = require("./utils/modelPolicy");
 const { loadPromptBundle } = require("./utils/promptManager");
 const { scoreLead } = require("./utils/leadScoring");
 const { enqueue, closeAllQueues } = require("./utils/jobQueue");
-const { quitRedisClients } = require("./utils/redis");
-const { validateProductionBoot } = require("./utils/bootValidate");
+const { quitRedisClients, pingRedisForReadiness } = require("./utils/redis");
+const {
+  validateProductionBoot,
+  logProductionBootWarnings,
+  logRuntimeModeHint,
+} = require("./utils/bootValidate");
 const { sendGenericWebhook } = require("./utils/webhook");
 const {
   EventType,
@@ -34,12 +38,28 @@ const {
 } = require("./integrations/domain");
 const { emitIntegrationEvent } = require("./services/outboundEvents");
 const { enqueueLeadNotificationEmail } = require("./services/leadEmailQueue");
+const {
+  provisionTenant,
+  listTenantsForAdmin,
+  verifyTenantForAdmin,
+  bootstrapPromptsForTenant,
+  rotateTenantIntegrationKey,
+} = require("./services/tenantProvisioning");
 const { createRequireTenantApiKey } = require("./middleware/tenantApiKey");
 const { normalizeInbound, listAdapters } = require("./integrations/adapters");
 const PROMPTS_DIR = process.env.PROMPTS_DIR || "prompts/tenants";
 const DEFAULT_TENANT = (process.env.DEFAULT_TENANT || "default").toLowerCase();
 const HOT = process.env.HOT_RELOAD_PROMPTS === "1";
 const cache = new Map(); // key=abs path -> contents
+
+/** Non-secret deployment hints for admin APIs and readiness (operator UX). */
+function getAdminServerHints() {
+  return {
+    globalOpenaiConfigured: Boolean(String(process.env.OPENAI_API_KEY || "").trim()),
+    openaiBootOptional: process.env.OPENAI_BOOT_OPTIONAL === "1",
+    nodeEnv: process.env.NODE_ENV || "",
+  };
+}
 
 // ---------- Tenant resolver (SSO → header → query → subdomain → DEFAULT_TENANT) ----------
 function resolveTenantSlug(req) {
@@ -835,16 +855,83 @@ app.get('/api/health', (_req, res) => {
 });
 
 app.get('/api/ready', async (_req, res) => {
+  const strict = process.env.NODE_ENV === 'production';
+  const checks = { database: 'unknown', redis: 'unknown', defaultTenant: 'unknown' };
+
   try {
     await Promise.race([
       prisma.$queryRaw`SELECT 1`,
       new Promise((_, reject) => setTimeout(() => reject(new Error('db_timeout')), 2_000)),
     ]);
-    res.json({ status: 'ready', product: 'solomon' });
+    checks.database = 'ok';
   } catch (err) {
-    console.error('readiness check failed:', err.message);
-    res.status(503).json({ status: 'not_ready', reason: 'database_unreachable' });
+    console.error('readiness check failed (database):', err.message);
+    checks.database = 'fail';
+    return res.status(503).json({ status: 'not_ready', reason: 'database_unreachable', checks });
   }
+
+  if (strict) {
+    const redisCheck = await pingRedisForReadiness(2000);
+    if (!redisCheck.ok) {
+      checks.redis = 'fail';
+      console.error('readiness check failed (redis):', redisCheck.reason);
+      return res.status(503).json({
+        status: 'not_ready',
+        reason: redisCheck.reason || 'redis_unreachable',
+        checks,
+      });
+    }
+    checks.redis = 'ok';
+
+    const slug = (process.env.DEFAULT_TENANT || 'default').toLowerCase();
+    const tenantRow = await prisma.tenant.findFirst({
+      where: { OR: [{ id: slug }, { subdomain: slug }] },
+      select: { id: true },
+    });
+    if (!tenantRow) {
+      checks.defaultTenant = 'missing';
+      return res.status(503).json({
+        status: 'not_ready',
+        reason: 'bootstrap_tenant_missing',
+        checks,
+      });
+    }
+    checks.defaultTenant = 'ok';
+  } else {
+    checks.redis = 'skipped_non_production';
+    checks.defaultTenant = 'skipped_non_production';
+  }
+
+  /** Operator hints: app can be "ready" while some tenants lack chat keys. */
+  const hints = [];
+  try {
+    const globalOpenai = Boolean(String(process.env.OPENAI_API_KEY || "").trim());
+    const optional = process.env.OPENAI_BOOT_OPTIONAL === "1";
+    if (!globalOpenai && !optional) {
+      const n = await prisma.tenant.count({
+        where: {
+          OR: [{ openaiKey: null }, { openaiKey: "" }],
+        },
+      });
+      if (n > 0) {
+        hints.push({
+          code: "tenants_without_openai_fallback",
+          severity: "warn",
+          message: `${n} tenant(s) have no per-tenant OpenAI key while the server has no OPENAI_API_KEY. Chat fails for those tenants until you set OPENAI_API_KEY, add per-tenant keys, or use OPENAI_BOOT_OPTIONAL=1 with every tenant keyed.`,
+        });
+      }
+    }
+  } catch (e) {
+    console.warn("readiness hints query skipped:", e.message);
+  }
+
+  res.json({
+    status: 'ready',
+    product: 'solomon',
+    version: '1.0.0',
+    checks,
+    hints,
+  });
 });
 
 // Public embed hints (theme); rate-limited. No secrets.
@@ -979,6 +1066,203 @@ app.post('/api/keys/rotate', authLimiter, requirePlatformAuth, requirePermission
     res.status(500).json({ error: "api_key_rotate_failed" });
   }
 });
+
+// ---- Admin tenant provisioning (platform SSO + tenants:provision) ----
+app.get(
+  "/api/admin/tenants",
+  requirePlatformAuth,
+  requirePermission("tenants:provision"),
+  async (_req, res) => {
+    try {
+      const tenants = await listTenantsForAdmin(prisma);
+      res.json({ tenants, serverHints: getAdminServerHints() });
+    } catch (e) {
+      console.error("admin tenants list", e);
+      res.status(500).json({ error: "list_failed" });
+    }
+  }
+);
+
+app.post(
+  "/api/admin/tenants",
+  authLimiter,
+  requirePlatformAuth,
+  requirePermission("tenants:provision"),
+  async (req, res) => {
+    try {
+      const body = req.body || {};
+      const result = await provisionTenant(prisma, {
+        slug: body.slug,
+        name: body.name,
+        plan: body.plan,
+        useGlobalOpenai: Boolean(body.useGlobalOpenai),
+        openaiKey: body.openaiKey,
+        skipIntegrationKey: Boolean(body.skipIntegrationKey),
+        force: Boolean(body.force),
+        rotateIntegrationKey: Boolean(body.rotateIntegrationKey),
+      });
+
+      if (!result.ok) {
+        const status =
+          result.code === "validation"
+            ? 400
+            : result.code === "conflict"
+              ? 409
+              : result.code === "kms"
+                ? 400
+                : 500;
+        return res.status(status).json({ error: result.error, code: result.code });
+      }
+
+      let bootstrap = null;
+      if (body.bootstrapPrompts) {
+        bootstrap = await bootstrapPromptsForTenant(prisma, result.tenantId);
+      }
+
+      await writeAudit(prisma, req, {
+        tenantId: result.tenantId,
+        action: "tenant.provision",
+        resource: "tenant",
+        resourceId: result.tenantId,
+        outcome: "ok",
+        details: { created: result.created, updated: result.updated },
+      });
+
+      const sh = getAdminServerHints();
+      /** @type {{ code: string; severity: string; message: string }[]} */
+      const hints = [];
+      const useGlobalOpenai = Boolean(body.useGlobalOpenai);
+      const perTenantOpenai = useGlobalOpenai
+        ? ""
+        : String(body.openaiKey || "").trim();
+      if (useGlobalOpenai && !sh.globalOpenaiConfigured && !sh.openaiBootOptional) {
+        hints.push({
+          code: "global_openai_not_configured",
+          severity: "warn",
+          message:
+            "This tenant is set to use the global OpenAI key, but OPENAI_API_KEY is not set on the server. Chat will fail until you set it or add a per-tenant OpenAI key.",
+        });
+      }
+      if (
+        !useGlobalOpenai &&
+        !perTenantOpenai &&
+        result.created &&
+        !sh.globalOpenaiConfigured &&
+        !sh.openaiBootOptional
+      ) {
+        hints.push({
+          code: "no_openai_for_new_tenant",
+          severity: "warn",
+          message:
+            "New tenant was created without a per-tenant OpenAI key and the server has no OPENAI_API_KEY. Chat will not work until you configure one or the other.",
+        });
+      }
+      if (Boolean(body.skipIntegrationKey)) {
+        hints.push({
+          code: "integration_key_skipped",
+          severity: "info",
+          message:
+            "Inbound integration routes (/api/integrations/v1/…) need an integration API key. Use Rotate integration key in /admin or re-provision without skip when ready.",
+        });
+      }
+
+      res.json({
+        ok: true,
+        tenantId: result.tenantId,
+        created: result.created,
+        updated: result.updated,
+        integrationKey: result.integrationKeyPlain || null,
+        bootstrap,
+        hints,
+        serverHints: sh,
+      });
+    } catch (e) {
+      console.error("admin tenants create", e);
+      res.status(500).json({ error: "provision_failed", message: e.message });
+    }
+  }
+);
+
+app.get(
+  "/api/admin/tenants/:slug/verify",
+  requirePlatformAuth,
+  requirePermission("tenants:provision"),
+  async (req, res) => {
+    try {
+      const sh = getAdminServerHints();
+      const v = await verifyTenantForAdmin(prisma, req.params.slug, undefined, {
+        globalOpenaiConfigured: sh.globalOpenaiConfigured,
+        openaiBootOptional: sh.openaiBootOptional,
+      });
+      if (!v.ok) {
+        return res.status(404).json(v);
+      }
+      res.json(v);
+    } catch (e) {
+      console.error("admin tenant verify", e);
+      res.status(500).json({ error: "verify_failed" });
+    }
+  }
+);
+
+app.post(
+  "/api/admin/tenants/:slug/bootstrap-prompts",
+  authLimiter,
+  requirePlatformAuth,
+  requirePermission("tenants:provision"),
+  async (req, res) => {
+    try {
+      const out = await bootstrapPromptsForTenant(prisma, req.params.slug);
+      if (!out.ok) {
+        return res.status(404).json(out);
+      }
+      await writeAudit(prisma, req, {
+        tenantId: out.tenantId,
+        action: "tenant.bootstrap_prompts",
+        resource: "tenant",
+        resourceId: out.tenantId,
+        outcome: "ok",
+        details: { files: out.files },
+      });
+      res.json(out);
+    } catch (e) {
+      console.error("admin bootstrap prompts", e);
+      res.status(500).json({ error: "bootstrap_failed" });
+    }
+  }
+);
+
+app.post(
+  "/api/admin/tenants/:slug/rotate-integration-key",
+  authLimiter,
+  requirePlatformAuth,
+  requirePermission("tenants:provision"),
+  async (req, res) => {
+    try {
+      const r = await rotateTenantIntegrationKey(prisma, req.params.slug);
+      if (!r.ok) {
+        return res.status(404).json(r);
+      }
+      await writeAudit(prisma, req, {
+        tenantId: r.tenantId,
+        action: "tenant.integration_key.rotate",
+        resource: "tenant_apikey",
+        resourceId: r.tenantId,
+        outcome: "ok",
+      });
+      res.json({
+        apiKey: r.apiKey,
+        tenantId: r.tenantId,
+        rotatedAt: new Date().toISOString(),
+        message:
+          "The previous integration key stops working immediately. Update X-Api-Key or Bearer in every integration client before closing this screen; the new value is shown only in this response.",
+      });
+    } catch (e) {
+      console.error("admin rotate integration key", e);
+      res.status(500).json({ error: "rotate_failed" });
+    }
+  }
+);
 
 function assertAllowedWebhookUrl(endpoint) {
   let url;
@@ -1942,7 +2226,11 @@ if (process.env.ENABLE_HEARTBEAT === '1') {
 // ----------------- Server startup -----------------
 const PORT = process.env.PORT || 8080;
 if (require.main === module) {
+  if (process.env.NODE_ENV !== "production") {
+    logRuntimeModeHint();
+  }
   validateProductionBoot();
+  logProductionBootWarnings();
   const server = app.listen(PORT, () => {
     console.log(`✅ Solomon backend running on port ${PORT}`);
   });

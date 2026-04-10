@@ -282,6 +282,253 @@
     box.textContent = r.body.apiKey || "";
   }
 
+  function syncOnbOpenaiField() {
+    const g = $("onb-use-global-openai");
+    const k = $("onb-openai-key");
+    if (!k || !g) return;
+    k.disabled = g.checked;
+    if (g.checked) k.value = "";
+  }
+
+  async function loadTenantDirectory() {
+    const dir = $("onb-directory");
+    if (!dir) return;
+    const r = await api("/api/admin/tenants");
+    if (r.status === 401) {
+      dir.innerHTML = "";
+      return;
+    }
+    if (r.status === 403) {
+      dir.innerHTML =
+        '<li>Your platform role cannot provision tenants (needs <strong>operator</strong>, <strong>admin</strong>, or <strong>owner</strong>).</li>';
+      return;
+    }
+    if (!r.ok) {
+      dir.innerHTML = "<li>Could not load tenants: " + (r.body?.error || r.status) + "</li>";
+      return;
+    }
+    renderServerHints(r.body.serverHints);
+    const tenants = r.body.tenants || [];
+    dir.innerHTML = tenants.length
+      ? tenants
+          .map(
+            (t) =>
+              `<li><strong class="mono">${t.id}</strong> — ${escapeHtml(t.name)} · plan ${escapeHtml(t.plan)} · OpenAI ${t.hasOpenaiKey ? "yes" : "no"} · int.key ${t.hasIntegrationKey ? "yes" : "no"}</li>`
+          )
+          .join("")
+      : "<li>No tenants yet.</li>";
+  }
+
+  function escapeHtml(s) {
+    return String(s || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function renderServerHints(sh) {
+    const el = $("onb-server-hints");
+    if (!el) return;
+    if (!sh) {
+      el.hidden = true;
+      el.textContent = "";
+      return;
+    }
+    const lines = [];
+    if (!sh.globalOpenaiConfigured && !sh.openaiBootOptional) {
+      lines.push(
+        "No OPENAI_API_KEY on the server (and OPENAI_BOOT_OPTIONAL is off). Each tenant needs a per-tenant key or chat will fail."
+      );
+    } else if (sh.globalOpenaiConfigured) {
+      lines.push(
+        "OPENAI_API_KEY is set — tenants can rely on the global key when they do not have a per-tenant key."
+      );
+    }
+    if (sh.openaiBootOptional) {
+      lines.push(
+        "OPENAI_BOOT_OPTIONAL=1 — the process starts without a global OpenAI key; every chat tenant must have openaiKey stored in the database."
+      );
+    }
+    if (sh.nodeEnv && sh.nodeEnv !== "production") {
+      lines.push(
+        'NODE_ENV is not "production" — /api/ready skips Redis and bootstrap-tenant checks. Use NODE_ENV=production for managed installs.'
+      );
+    }
+    if (!lines.length) {
+      el.hidden = true;
+      el.textContent = "";
+      return;
+    }
+    el.hidden = false;
+    el.className = "banner onb-hints warn";
+    el.innerHTML =
+      "<strong>Environment</strong><ul>" +
+      lines.map((l) => "<li>" + escapeHtml(l) + "</li>").join("") +
+      "</ul>";
+  }
+
+  function onbSlug() {
+    return val("onb-slug");
+  }
+
+  async function createOnboardingTenant() {
+    const status = $("onb-status");
+    const keyBox = $("onb-key-reveal");
+    if (!status || !keyBox) return;
+    status.textContent = "";
+    status.className = "muted mt-1";
+    keyBox.hidden = true;
+    keyBox.textContent = "";
+
+    const slug = onbSlug();
+    const name = val("onb-name");
+    if (!slug || !name) {
+      status.textContent = "Slug and display name are required.";
+      return;
+    }
+
+    const useGlobal = $("onb-use-global-openai")?.checked !== false;
+    const payload = {
+      slug,
+      name,
+      plan: ($("onb-plan") && $("onb-plan").value) || "basic",
+      useGlobalOpenai: useGlobal,
+      openaiKey: useGlobal ? "" : val("onb-openai-key"),
+      skipIntegrationKey: $("onb-skip-int-key")?.checked === true,
+      bootstrapPrompts: $("onb-bootstrap-prompts")?.checked !== false,
+      force: $("onb-force")?.checked === true,
+    };
+
+    const r = await api("/api/admin/tenants", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+
+    if (r.status === 403) {
+      status.textContent = "Forbidden: your role cannot provision tenants.";
+      return;
+    }
+    if (!r.ok) {
+      status.textContent =
+        "Failed: " + (r.body?.error || r.status) + (r.body?.code ? " (" + r.body.code + ")" : "");
+      return;
+    }
+
+    let msg = r.body.updated
+      ? "Tenant updated. Copy any new keys below."
+      : "Tenant created. Save the integration key below — it will not be shown again.";
+    if (r.body.integrationKey) {
+      keyBox.hidden = false;
+      keyBox.textContent = r.body.integrationKey;
+    }
+    if (r.body.bootstrap && r.body.bootstrap.files) {
+      const parts = r.body.bootstrap.files.map((f) => f.file + ": " + f.status);
+      msg += " Prompts: " + parts.join(", ") + ".";
+    }
+    if (r.body.hints && r.body.hints.length) {
+      msg +=
+        "\n\n" +
+        r.body.hints.map((h) => "[" + h.severity + "] " + h.message).join("\n");
+    }
+    status.textContent = msg;
+    loadTenantDirectory();
+    tenantInput.value = slug;
+    localStorage.setItem(TENANT_KEY, slug);
+    loadAll();
+  }
+
+  async function verifyOnboardingTenant() {
+    const status = $("onb-status");
+    const keyBox = $("onb-key-reveal");
+    if (!status) return;
+    const slug = onbSlug();
+    if (!slug) {
+      status.textContent = "Enter a tenant slug first.";
+      return;
+    }
+    status.className = "muted mt-1";
+    keyBox.hidden = true;
+    const r = await api("/api/admin/tenants/" + encodeURIComponent(slug) + "/verify");
+    if (r.status === 403) {
+      status.textContent = "Forbidden.";
+      return;
+    }
+    if (!r.ok) {
+      status.textContent = "Verify failed: " + (r.body?.error || r.status);
+      status.className = "muted mt-1 verify-out blocked";
+      return;
+    }
+    const t = r.body.tenant;
+    const lines = [
+      (r.body.readyForChat === false ? "Not ready for chat — " : "OK — ") +
+        `${t.name} · OpenAI: ${t.openai} · Integration: ${t.integrationKey} · Prompts: ${t.prompts}`,
+    ];
+    if (r.body.badges) {
+      const b = r.body.badges;
+      lines.push(`Badges — chat: ${b.chat} · integrations: ${b.integrations} · prompts: ${b.prompts}`);
+    }
+    if (r.body.warnings && r.body.warnings.length) {
+      lines.push(r.body.warnings.map((w) => `[${w.severity}] ${w.message}`).join("\n"));
+    }
+    status.textContent = lines.join("\n\n");
+    status.className =
+      "muted mt-1 verify-out" + (r.body.readyForChat === false ? " blocked" : "");
+  }
+
+  async function bootstrapOnboardingPrompts() {
+    const status = $("onb-status");
+    if (!status) return;
+    const slug = onbSlug();
+    if (!slug) {
+      status.textContent = "Enter a tenant slug first.";
+      return;
+    }
+    const r = await api("/api/admin/tenants/" + encodeURIComponent(slug) + "/bootstrap-prompts", {
+      method: "POST",
+      body: "{}",
+    });
+    if (!r.ok) {
+      status.textContent = "Bootstrap failed: " + (r.body?.error || r.status);
+      return;
+    }
+    const parts = (r.body.files || []).map((f) => f.file + ": " + f.status);
+    status.textContent = "Prompt files: " + parts.join(", ");
+  }
+
+  async function rotateOnboardingIntegrationKey() {
+    const status = $("onb-status");
+    const keyBox = $("onb-key-reveal");
+    if (!status || !keyBox) return;
+    const slug = onbSlug();
+    if (!slug) {
+      status.textContent = "Enter a tenant slug first.";
+      return;
+    }
+    if (
+      !confirm(
+        'Rotate the integration API key for "' +
+          slug +
+          '"?\n\nThe previous key stops working immediately. Update X-Api-Key or Bearer on every client before you dismiss the new key.'
+      )
+    )
+      return;
+    const r = await api("/api/admin/tenants/" + encodeURIComponent(slug) + "/rotate-integration-key", {
+      method: "POST",
+      body: "{}",
+    });
+    if (!r.ok) {
+      status.textContent = "Rotate failed: " + (r.body?.error || r.status);
+      return;
+    }
+    status.textContent =
+      (r.body.message || "New integration key (save now — shown only once):") +
+      "\n\nCopy the key below before leaving this page.";
+    keyBox.hidden = false;
+    keyBox.textContent = r.body.apiKey || "";
+    loadTenantDirectory();
+  }
+
   function init() {
     const stored = localStorage.getItem(TENANT_KEY);
     const q = new URLSearchParams(location.search).get("tenant");
@@ -312,6 +559,18 @@
       loadAll();
     });
 
+    const gOpen = $("onb-use-global-openai");
+    if (gOpen) gOpen.addEventListener("change", syncOnbOpenaiField);
+    syncOnbOpenaiField();
+    const btnOnb = $("btn-onb-create");
+    if (btnOnb) btnOnb.addEventListener("click", createOnboardingTenant);
+    const btnV = $("btn-onb-verify");
+    if (btnV) btnV.addEventListener("click", verifyOnboardingTenant);
+    const btnB = $("btn-onb-bootstrap");
+    if (btnB) btnB.addEventListener("click", bootstrapOnboardingPrompts);
+    const btnR = $("btn-onb-rotate-int");
+    if (btnR) btnR.addEventListener("click", rotateOnboardingIntegrationKey);
+
     loadAll();
   }
 
@@ -319,6 +578,7 @@
     loadStatsAndConfig();
     loadBranding();
     loadWebhookMeta().then(loadWebhooks);
+    loadTenantDirectory();
   }
 
   init();

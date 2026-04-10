@@ -3,6 +3,8 @@
 
 const BASE_URL = (process.env.SMOKE_BASE_URL || 'http://127.0.0.1:8080').replace(/\/+$/, '');
 const TENANT = process.env.SMOKE_TENANT || '';
+/** Skip POST /message (avoids OpenAI usage on every ./scripts/start.sh). */
+const SMOKE_LITE = process.env.SMOKE_LITE === '1';
 
 function assert(cond, msg) {
   if (!cond) throw new Error(msg);
@@ -49,7 +51,9 @@ async function main() {
 
   // 3) Rate limiting smoke for /message
   // Requires a valid tenant in DB if you want this check enforced.
-  if (TENANT) {
+  if (SMOKE_LITE) {
+    console.log('SKIP /message (SMOKE_LITE=1 — set SMOKE_LITE=0 and SMOKE_TENANT for a live OpenAI chat check)');
+  } else if (TENANT) {
     const path = `/message?tenant=${encodeURIComponent(TENANT)}`;
     const first = await postJson(path, { message: 'smoke test', source: 'contact' });
     assert(first.res.status !== 500, `unexpected 500 from /message: ${first.text}`);

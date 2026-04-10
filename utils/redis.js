@@ -56,4 +56,29 @@ async function quitRedisClients() {
   await Promise.all(tasks);
 }
 
-module.exports = { getRedis, getBullmqConnection, quitRedisClients };
+/**
+ * Liveness for the shared rate-limit Redis client (same REDIS_URL as BullMQ).
+ * @returns {{ ok: true } | { ok: false, reason: string }}
+ */
+async function pingRedisForReadiness(timeoutMs = 2000) {
+  const redisClient = getRedis();
+  if (!redisClient) {
+    return { ok: false, reason: "redis_not_configured" };
+  }
+  try {
+    const pong = await Promise.race([
+      redisClient.ping(),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("redis_timeout")), timeoutMs)
+      ),
+    ]);
+    if (pong !== "PONG") {
+      return { ok: false, reason: "redis_ping_unexpected" };
+    }
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, reason: err?.message || String(err) };
+  }
+}
+
+module.exports = { getRedis, getBullmqConnection, quitRedisClients, pingRedisForReadiness };

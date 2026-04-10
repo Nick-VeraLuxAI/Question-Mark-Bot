@@ -2,13 +2,26 @@
   "name": "solomon-backend",
   "version": "1.0.0",
   "main": "server.js",
+  "prisma": {
+    "seed": "node prisma/seed.js"
+  },
   "scripts": {
+    "postinstall": "prisma generate",
     "start": "node server.js",
     "dev": "node server.js",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate deploy",
+    "db:seed": "prisma db seed",
+    "db:deploy": "prisma migrate deploy && prisma db seed",
     "worker": "node workers/queueWorker.js",
     "test": "node --test tests/**/*.test.js",
     "test:integration": "node --test tests/integration/**/*.test.js",
     "smoke:prod": "node smoke-readiness.js",
+    "smoke:lite": "SMOKE_LITE=1 node smoke-readiness.js",
+    "tenant:create": "node scripts/tenant-cli.js create",
+    "tenant:list": "node scripts/tenant-cli.js list",
+    "tenant:verify": "node scripts/tenant-cli.js verify",
+    "tenant:bootstrap-prompts": "node scripts/tenant-cli.js bootstrap-prompts",
     "audit:ci": "npm audit --audit-level=critical",
     "audit:report": "npm audit --audit-level=high || true"
   },

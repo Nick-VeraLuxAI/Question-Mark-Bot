@@ -20,6 +20,7 @@ function hasPermission(role, permission) {
   }
   if (r === "operator") {
     return [
+      "tenants:provision",
       "stats:read",
       "config:read",
       "config:write",
