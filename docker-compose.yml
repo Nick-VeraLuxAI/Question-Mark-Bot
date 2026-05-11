@@ -53,7 +53,7 @@ services:
       NODE_ENV: production
       PORT: "8080"
       # client = visitor-facing copy on / ; internal = Solomon operator preview (see branch internal)
-      UI_PROFILE: ${UI_PROFILE:-client}
+      UI_PROFILE: ${UI_PROFILE:-internal}
       PUBLIC_PRODUCT_LABEL: ${PUBLIC_PRODUCT_LABEL:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://127.0.0.1:8080,http://localhost:8080}
       DEFAULT_TENANT: ${DEFAULT_TENANT:-default}
