@@ -7,18 +7,22 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/admin/admin.css?v=5" />
+  <link rel="stylesheet" href="/admin/admin.css?v=7" />
 </head>
-<body>
+<body class="admin-simple">
   <div class="wrap">
     <header>
       <div>
-        <h1>Solomon dashboard</h1>
-        <p class="sub">Tenant onboarding, stats, API keys, and outbound webhooks</p>
+        <h1>
+          <span class="simple-only">Solomon settings</span>
+          <span class="advanced-only">Solomon dashboard</span>
+        </h1>
+        <p class="sub simple-only">See activity, set up chat for your sites, and adjust how it looks.</p>
+        <p class="sub advanced-only">Tenant onboarding, stats, API keys, and outbound webhooks</p>
       </div>
       <div class="toolbar">
         <div>
-          <label for="tenant-slug">Tenant</label><br />
+          <label for="tenant-slug"><span class="simple-only">Site / profile</span><span class="advanced-only">Tenant</span></label><br />
           <input type="text" id="tenant-slug" placeholder="default" autocomplete="off" />
         </div>
         <div class="toolbar-end">
@@ -27,74 +31,89 @@
       </div>
     </header>
 
+    <div class="admin-mode-bar" id="admin-mode-bar">
+      <p class="admin-mode-hint muted" id="admin-mode-hint">Guided setup — technical tools stay hidden until you need them.</p>
+      <button type="button" class="secondary" id="btn-toggle-mode">Technical settings…</button>
+    </div>
+
     <div id="auth-banner" class="banner" hidden></div>
 
     <section class="panel" id="panel-onboarding">
-      <h2>Tenant onboarding</h2>
-      <p class="muted">
+      <h2>
+        <span class="simple-only">Set up chat for your site</span>
+        <span class="advanced-only">Tenant onboarding</span>
+      </h2>
+      <p class="muted simple-only">
+        Create a profile for each website or brand. Sign in with your company account if your administrator enabled access.
+      </p>
+      <p class="muted advanced-only">
         Create and check tenants from the dashboard (no CLI). Requires platform SSO with
         <strong>operator</strong>, <strong>admin</strong>, or <strong>owner</strong>.
         Chat uses global <code>OPENAI_API_KEY</code> unless you add a per-tenant key below.
       </p>
       <div class="form-row">
-        <label for="onb-slug">New tenant slug</label>
+        <label for="onb-slug"><span class="simple-only">Site ID</span><span class="advanced-only">New tenant slug</span></label>
         <input type="text" id="onb-slug" placeholder="acme" autocomplete="off" spellcheck="false" />
       </div>
       <div class="form-row">
-        <label for="onb-name">Display name</label>
+        <label for="onb-name"><span class="simple-only">Public name</span><span class="advanced-only">Display name</span></label>
         <input type="text" id="onb-name" placeholder="Acme Corp" autocomplete="organization" />
       </div>
-      <div class="form-row">
-        <label for="onb-plan">Plan</label>
-        <select id="onb-plan">
-          <option value="basic">basic</option>
-          <option value="pro">pro</option>
-        </select>
+      <div class="advanced-only">
+        <div class="form-row">
+          <label for="onb-plan">Plan</label>
+          <select id="onb-plan">
+            <option value="basic">basic</option>
+            <option value="pro">pro</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label><input type="checkbox" id="onb-use-global-openai" checked /> Use global OpenAI key (recommended if <code>OPENAI_API_KEY</code> is set)</label>
+        </div>
+        <div class="form-row">
+          <label for="onb-openai-key">Per-tenant OpenAI key (optional)</label>
+          <input type="password" id="onb-openai-key" placeholder="sk-…" autocomplete="off" disabled />
+        </div>
+        <div class="form-row">
+          <label><input type="checkbox" id="onb-skip-int-key" /> Skip integration API key (inbound integrations need a key)</label>
+        </div>
+        <div class="form-row">
+          <label><input type="checkbox" id="onb-bootstrap-prompts" checked /> Copy default prompt files into <code>prompts/tenants/&lt;slug&gt;/</code></label>
+        </div>
+        <div class="form-row">
+          <label><input type="checkbox" id="onb-force" /> Update existing tenant if slug already exists (metadata / keys per options)</label>
+        </div>
       </div>
-      <div class="form-row">
-        <label><input type="checkbox" id="onb-use-global-openai" checked /> Use global OpenAI key (recommended if <code>OPENAI_API_KEY</code> is set)</label>
-      </div>
-      <div class="form-row">
-        <label for="onb-openai-key">Per-tenant OpenAI key (optional)</label>
-        <input type="password" id="onb-openai-key" placeholder="sk-…" autocomplete="off" disabled />
-      </div>
-      <div class="form-row">
-        <label><input type="checkbox" id="onb-skip-int-key" /> Skip integration API key (inbound integrations need a key)</label>
-      </div>
-      <div class="form-row">
-        <label><input type="checkbox" id="onb-bootstrap-prompts" checked /> Copy default prompt files into <code>prompts/tenants/&lt;slug&gt;/</code></label>
-      </div>
-      <div class="form-row">
-        <label><input type="checkbox" id="onb-force" /> Update existing tenant if slug already exists (metadata / keys per options)</label>
-      </div>
-      <button type="button" id="btn-onb-create">Create tenant</button>
+      <button type="button" id="btn-onb-create"><span class="simple-only">Create profile</span><span class="advanced-only">Create tenant</span></button>
       <p class="muted mt-1" id="onb-status"></p>
       <div id="onb-key-reveal" class="key-reveal" hidden></div>
       <hr class="onb-hr" />
-      <p class="muted">After create, use the same slug below:</p>
+      <p class="muted simple-only">Use the same Site ID above for these actions:</p>
+      <p class="muted advanced-only">After create, use the same slug below:</p>
       <div class="form-row onb-actions">
-        <button type="button" class="secondary" id="btn-onb-verify">Verify readiness</button>
-        <button type="button" class="secondary" id="btn-onb-bootstrap">Bootstrap prompts only</button>
-        <button type="button" class="secondary" id="btn-onb-rotate-int">Rotate integration key</button>
+        <button type="button" class="secondary" id="btn-onb-verify"><span class="simple-only">Check chat readiness</span><span class="advanced-only">Verify readiness</span></button>
+        <button type="button" class="secondary advanced-only" id="btn-onb-bootstrap">Bootstrap prompts only</button>
+        <button type="button" class="secondary advanced-only" id="btn-onb-rotate-int">Rotate integration key</button>
       </div>
-      <div id="onb-server-hints" class="banner onb-hints" hidden></div>
-      <p class="muted mt-1"><strong>Tenants in database</strong></p>
+      <div id="onb-server-hints" class="banner onb-hints advanced-only" hidden></div>
+      <p class="muted mt-1"><strong class="simple-only">Profiles</strong><strong class="advanced-only">Tenants in database</strong></p>
       <ul id="onb-directory" class="onb-directory muted"></ul>
     </section>
 
     <section class="panel" id="panel-stats">
-      <h2>Overview</h2>
+      <h2><span class="simple-only">Activity</span><span class="advanced-only">Overview</span></h2>
       <div id="stats-grid" class="grid"></div>
-      <p class="muted mt-1" id="config-line"></p>
+      <p class="muted mt-1 advanced-only" id="config-line"></p>
     </section>
 
     <section class="panel" id="panel-branding">
-      <h2>Branding &amp; embed theme</h2>
-      <p class="muted">
+      <h2><span class="simple-only">Look &amp; feel</span><span class="advanced-only">Branding &amp; embed theme</span></h2>
+      <p class="muted simple-only">Pick light/dark (or match the visitor’s device) and your brand accent for the chat window.</p>
+      <p class="muted advanced-only">
         Drives <code>/env.css</code> and the chat widget. Theme default for embeds: <strong>auto</strong> follows the visitor’s OS; visitors can still override with the in-widget control.
       </p>
       <div class="form-row">
-        <label for="br-theme">Default embed theme</label>
+        <label for="br-theme"><span class="simple-only">Theme</span><span class="advanced-only">Default embed theme</span></label>
         <select id="br-theme">
           <option value="auto">Auto (system preference)</option>
           <option value="light">Light</option>
@@ -103,66 +122,66 @@
       </div>
       <div class="grid branding-grid">
         <div class="form-row">
-          <label for="br-brand">Brand color</label>
+          <label for="br-brand"><span class="simple-only">Brand accent color</span><span class="advanced-only">Brand color</span></label>
           <input type="text" id="br-brand" placeholder="#6B705C" />
         </div>
-        <div class="form-row">
+        <div class="form-row advanced-only">
           <label for="br-brand-hover">Brand hover</label>
           <input type="text" id="br-brand-hover" placeholder="#556052" />
         </div>
-        <div class="form-row">
+        <div class="form-row advanced-only">
           <label for="br-bot-bg">Bot bubble bg</label>
           <input type="text" id="br-bot-bg" placeholder="#F4F1EA" />
         </div>
-        <div class="form-row">
+        <div class="form-row advanced-only">
           <label for="br-bot-text">Bot text</label>
           <input type="text" id="br-bot-text" placeholder="#2C2C2C" />
         </div>
-        <div class="form-row">
+        <div class="form-row advanced-only">
           <label for="br-user-bg">User accent</label>
           <input type="text" id="br-user-bg" placeholder="#8A7B68" />
         </div>
-        <div class="form-row">
+        <div class="form-row advanced-only">
           <label for="br-user-text">User bubble text</label>
           <input type="text" id="br-user-text" placeholder="#FFFFFF" />
         </div>
-        <div class="form-row">
+        <div class="form-row advanced-only">
           <label for="br-glass-bg">Glass background</label>
           <input type="text" id="br-glass-bg" placeholder="rgba(…)" />
         </div>
-        <div class="form-row">
+        <div class="form-row advanced-only">
           <label for="br-glass-top">Glass top</label>
           <input type="text" id="br-glass-top" placeholder="rgba(…)" />
         </div>
-        <div class="form-row">
+        <div class="form-row advanced-only">
           <label for="br-blur">Blur</label>
           <input type="text" id="br-blur" placeholder="10px" />
         </div>
-        <div class="form-row">
+        <div class="form-row advanced-only">
           <label for="br-font">Font family (CSS)</label>
           <input type="text" id="br-font" placeholder="Inter, system-ui, sans-serif" />
         </div>
-        <div class="form-row">
+        <div class="form-row advanced-only">
           <label for="br-watermark">Watermark URL</label>
           <input type="text" id="br-watermark" placeholder="https://…" />
         </div>
       </div>
-      <div class="form-row">
+      <div class="form-row advanced-only">
         <label for="br-header-glow">Header glow (CSS gradient)</label>
         <input type="text" id="br-header-glow" class="wide" placeholder="radial-gradient(…)" />
       </div>
-      <button type="button" id="btn-save-branding">Save branding</button>
+      <button type="button" id="btn-save-branding"><span class="simple-only">Save look &amp; feel</span><span class="advanced-only">Save branding</span></button>
       <p class="muted mt-1" id="branding-status"></p>
     </section>
 
-    <section class="panel">
+    <section class="panel advanced-only">
       <h2>Integration API key</h2>
       <p class="muted">Used for <code>/api/integrations/v1/*</code> inbound routes. Shown once after rotate.</p>
       <button type="button" id="btn-rotate-key">Rotate API key</button>
       <div id="key-reveal" class="key-reveal" hidden></div>
     </section>
 
-    <section class="panel">
+    <section class="panel advanced-only">
       <h2>Outbound webhooks</h2>
       <p class="muted">Signed POSTs with canonical <code>schemaVersion</code> / <code>event</code>. Empty event list = all events.</p>
 
@@ -193,10 +212,10 @@
       </table>
     </section>
 
-    <p class="muted mt-2">
+    <p class="muted mt-2 advanced-only">
       Auth: platform SSO cookie from <code>/sso/callback</code>. Cookie sessions require a CSRF token (fetched automatically before each change). For local dev you may use a Bearer token instead.
     </p>
-    <section class="panel" id="dev-section" __DEV_SECTION_ATTRS__>
+    <section class="panel advanced-only" id="dev-section" __DEV_SECTION_ATTRS__>
       <h2>Developer</h2>
       <p class="muted dev-warn">
         Storing Bearer tokens in the browser is an <strong>XSS risk</strong> and is discouraged for production / SOC 2; prefer SSO only.
@@ -210,6 +229,6 @@
     </section>
   </div>
 
-  <script src="/admin/admin.js?v=5" defer nonce="__CSP_NONCE__"></script>
+  <script src="/admin/admin.js?v=7" defer nonce="__CSP_NONCE__"></script>
 </body>
 </html>

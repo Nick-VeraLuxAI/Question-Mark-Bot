@@ -10,13 +10,55 @@
 
   const TENANT_KEY = "solomon_dashboard_tenant";
   const TOKEN_KEY = "solomon_dashboard_bearer";
+  const ADV_MODE_KEY = "solomon_admin_advanced";
 
   let csrfToken = null;
 
-  function tenantSlug() {
+  function readInitialAdvanced() {
+    const q = new URLSearchParams(location.search);
+    if (q.get("advanced") === "1") {
+      localStorage.setItem(ADV_MODE_KEY, "1");
+      return true;
+    }
+    if (q.get("simple") === "1") {
+      localStorage.removeItem(ADV_MODE_KEY);
+      return false;
+    }
+    return localStorage.getItem(ADV_MODE_KEY) === "1";
+  }
+
+  function applyAdminMode(advanced) {
+    document.body.classList.toggle("admin-advanced", advanced);
+    document.body.classList.toggle("admin-simple", !advanced);
+    const hint = $("admin-mode-hint");
+    const btn = $("btn-toggle-mode");
+    if (hint) {
+      hint.textContent = advanced
+        ? "Technical view: API keys, webhooks, server environment hints, and developer token tools."
+        : "Guided setup — technical tools stay hidden until you need them.";
+    }
+    if (btn) btn.textContent = advanced ? "Simple guide" : "Technical settings…";
+  }
+
+  function syncModeUrl(advanced) {
+    const q = new URLSearchParams(location.search);
+    const slug = tenantSlugFromInputs();
+    q.delete("advanced");
+    q.delete("simple");
+    if (slug) q.set("tenant", slug);
+    if (advanced) q.set("advanced", "1");
+    const qs = q.toString();
+    history.replaceState(null, "", location.pathname + (qs ? "?" + qs : ""));
+  }
+
+  function tenantSlugFromInputs() {
     const q = new URLSearchParams(location.search).get("tenant");
     const fromInput = (tenantInput.value || "").trim();
     return fromInput || q || localStorage.getItem(TENANT_KEY) || "default";
+  }
+
+  function tenantSlug() {
+    return tenantSlugFromInputs();
   }
 
   function authHeaders() {
@@ -91,7 +133,9 @@
     const [st, cfg] = await Promise.all([api("/api/stats"), api("/api/config")]);
     if (st.status === 401 || cfg.status === 401) {
       showAuth(
-        "Not signed in. Open your platform portal, launch Solomon (SSO), or save a Bearer token under Developer below.",
+        document.body.classList.contains("admin-advanced")
+          ? "Not signed in. Open your platform portal, launch Solomon (SSO), or save a Bearer token under Developer below."
+          : "You're not signed in yet. Open Solomon from your company portal or ask your administrator for access.",
         true
       );
       statsGrid.innerHTML = "";
@@ -106,14 +150,25 @@
       showAuth("Config failed: " + (cfg.body?.error || cfg.status), true);
     }
     const s = st.body;
-    statsGrid.innerHTML = [
-      ["Conversations", s.conversations],
-      ["Leads", s.leads],
-      ["Messages", s.messages],
-      ["API calls (30d)", s.usage30d?.requests ?? "—"],
-      ["Tokens in (30d)", s.usage30d?.promptTokens ?? "—"],
-      ["Cost (30d)", s.usage30d?.cost != null ? "$" + Number(s.usage30d.cost).toFixed(4) : "—"],
-    ]
+    const advanced = document.body.classList.contains("admin-advanced");
+    const rows = advanced
+      ? [
+          ["Conversations", s.conversations],
+          ["Leads", s.leads],
+          ["Messages", s.messages],
+          ["API calls (30d)", s.usage30d?.requests ?? "—"],
+          ["Tokens in (30d)", s.usage30d?.promptTokens ?? "—"],
+          ["Cost (30d)", s.usage30d?.cost != null ? "$" + Number(s.usage30d.cost).toFixed(4) : "—"],
+        ]
+      : [
+          ["Chat threads", s.conversations],
+          ["Leads", s.leads],
+          ["Messages", s.messages],
+          ["API usage (30 days)", s.usage30d?.requests ?? "—"],
+          ["AI tokens in (30 days)", s.usage30d?.promptTokens ?? "—"],
+          ["Estimated cost (30 days)", s.usage30d?.cost != null ? "$" + Number(s.usage30d.cost).toFixed(4) : "—"],
+        ];
+    statsGrid.innerHTML = rows
       .map(
         ([lbl, val]) =>
           `<div class="stat"><div class="val">${val}</div><div class="lbl">${lbl}</div></div>`
@@ -309,14 +364,16 @@
     }
     renderServerHints(r.body.serverHints);
     const tenants = r.body.tenants || [];
+    const advanced = document.body.classList.contains("admin-advanced");
     dir.innerHTML = tenants.length
       ? tenants
-          .map(
-            (t) =>
-              `<li><strong class="mono">${t.id}</strong> — ${escapeHtml(t.name)} · plan ${escapeHtml(t.plan)} · OpenAI ${t.hasOpenaiKey ? "yes" : "no"} · int.key ${t.hasIntegrationKey ? "yes" : "no"}</li>`
+          .map((t) =>
+            advanced
+              ? `<li><strong class="mono">${t.id}</strong> — ${escapeHtml(t.name)} · plan ${escapeHtml(t.plan)} · OpenAI ${t.hasOpenaiKey ? "yes" : "no"} · int.key ${t.hasIntegrationKey ? "yes" : "no"}</li>`
+              : `<li><strong>${escapeHtml(t.name)}</strong><span class="muted"> · Site ID ${escapeHtml(t.id)}</span></li>`
           )
           .join("")
-      : "<li>No tenants yet.</li>";
+      : `<li>${advanced ? "No tenants yet." : "No profiles yet."}</li>`;
   }
 
   function escapeHtml(s) {
@@ -533,6 +590,19 @@
     const stored = localStorage.getItem(TENANT_KEY);
     const q = new URLSearchParams(location.search).get("tenant");
     tenantInput.value = q || stored || "default";
+
+    applyAdminMode(readInitialAdvanced());
+
+    const btnMode = $("btn-toggle-mode");
+    if (btnMode) {
+      btnMode.addEventListener("click", () => {
+        const next = !document.body.classList.contains("admin-advanced");
+        localStorage.setItem(ADV_MODE_KEY, next ? "1" : "0");
+        applyAdminMode(next);
+        syncModeUrl(next);
+        loadAll();
+      });
+    }
 
     const tok = localStorage.getItem(TOKEN_KEY);
     if (tok) $("dev-token").value = tok;

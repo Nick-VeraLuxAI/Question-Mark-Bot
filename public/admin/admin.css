@@ -149,6 +149,32 @@
     .mt-125 { margin-top: 1.25rem; }
     .mt-2 { margin-top: 2rem; }
     .toolbar-end { align-self: flex-end; }
+
+    .admin-simple .advanced-only,
+    .admin-advanced .simple-only {
+      display: none !important;
+    }
+
+    .admin-mode-bar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      padding: 0.85rem 1.1rem;
+      margin-bottom: 1.25rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+    }
+    .admin-mode-bar .admin-mode-hint {
+      margin: 0;
+      flex: 1;
+      min-width: 200px;
+      font-size: 0.8125rem;
+    }
+
     .dev-warn { color: var(--danger); margin-top: 0; }
     input[type="password"],
     select {
