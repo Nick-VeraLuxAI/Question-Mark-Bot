@@ -52,10 +52,44 @@ services:
       REDIS_URL: redis://redis:6379
       NODE_ENV: production
       PORT: "8080"
-      # client = visitor-facing copy on / ; internal = Solomon operator preview (see branch internal)
-      UI_PROFILE: ${UI_PROFILE:-client}
+      # Visitor-facing chat at HOST_PORT; api_internal runs UI_PROFILE=internal on HOST_PORT_INTERNAL.
+      UI_PROFILE: client
       PUBLIC_PRODUCT_LABEL: ${PUBLIC_PRODUCT_LABEL:-}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://127.0.0.1:8080,http://localhost:8080}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://127.0.0.1:8080,http://localhost:8080,http://127.0.0.1:8081,http://localhost:8081,http://127.0.0.1:8082,http://localhost:8082}
+      DEFAULT_TENANT: ${DEFAULT_TENANT:-default}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -sf http://127.0.0.1:8080/api/ready | grep -q '\"status\":\"ready\"'",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  # Second API process so client (/) and internal operator preview (/) can run at once; admin is /admin on either.
+  api_internal:
+    build: .
+    ports:
+      - "${HOST_PORT_INTERNAL:-8082}:8080"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://solomon:${POSTGRES_PASSWORD:-solomon_local_change_me}@postgres:5432/solomon
+      REDIS_URL: redis://redis:6379
+      NODE_ENV: production
+      PORT: "8080"
+      UI_PROFILE: internal
+      PUBLIC_PRODUCT_LABEL: ${PUBLIC_PRODUCT_LABEL:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://127.0.0.1:8080,http://localhost:8080,http://127.0.0.1:8081,http://localhost:8081,http://127.0.0.1:8082,http://localhost:8082}
       DEFAULT_TENANT: ${DEFAULT_TENANT:-default}
     depends_on:
       postgres:
