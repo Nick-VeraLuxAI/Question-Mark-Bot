@@ -9,12 +9,13 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <noscript><link id="env-css" rel="stylesheet" href="/env.css?v=1.0.1" /></noscript>
-  <link rel="stylesheet" href="/solomon.css?v=3" />
+  <link rel="stylesheet" href="/solomon.css?v=5" />
 </head>
 <body>
   <div class="container">
     <div class="canvas-root">
       <div class="header">
+        <span class="ui-badge" id="ui-badge" hidden>Operator</span>
         <span class="header-title" id="header-title">Assistant</span>
         <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Cycle theme: light, dark, or match system" title="Theme">◐</button>
       </div>
@@ -22,8 +23,12 @@
         <div class="canvas-column">
           <div class="intro-canvas" id="intro-card" role="region" aria-label="Welcome">
             <h1 id="welcome-title">How can we help you today?</h1>
-            <p id="welcome-subtitle">Ask about products and services, orders and accounts, or anything else we can clarify.</p>
-            <div class="intro-actions" id="intro-actions" aria-label="Suggested starters"></div>
+            <p id="welcome-subtitle">Send a message below — we will respond here in the chat.</p>
+            <div class="intro-actions" id="intro-actions" aria-label="Suggested shortcuts"></div>
+            <p class="operator-tools" id="operator-tools" hidden>
+              <a href="/admin" class="operator-link" target="_blank" rel="noopener noreferrer">Open dashboard</a>
+              <span class="operator-tools-hint" aria-hidden="true">— tenants &amp; keys</span>
+            </p>
           </div>
           <div class="chat-box" id="chat-box"></div>
           <div id="typing">Working on a reply…</div>
@@ -37,6 +42,6 @@
       </div>
     </div>
   </div>
-  <script src="/solomon.js?v=4" defer></script>
+  <script src="/solomon.js?v=5" defer></script>
 </body>
 </html>

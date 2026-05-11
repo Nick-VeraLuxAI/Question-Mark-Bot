@@ -51,6 +51,23 @@
 
   function applyEmbedCopy(data) {
     if (!data || typeof data !== "object") return;
+    const internal = data.uiProfile === "internal";
+    document.body.dataset.uiProfile = internal ? "internal" : "client";
+
+    const badge = document.getElementById("ui-badge");
+    if (badge) {
+      badge.hidden = !internal;
+      badge.setAttribute("aria-hidden", internal ? "false" : "true");
+    }
+    const opTools = document.getElementById("operator-tools");
+    if (opTools) {
+      opTools.hidden = !internal;
+    }
+    const introCard = document.getElementById("intro-card");
+    if (introCard) {
+      introCard.setAttribute("aria-label", internal ? "Operator preview" : "Welcome");
+    }
+
     if (data.headerTitle) {
       const ht = document.getElementById("header-title");
       if (ht) ht.textContent = data.headerTitle;
@@ -60,20 +77,22 @@
     if (wt && data.welcomeTitle) wt.textContent = data.welcomeTitle;
     const ws = document.getElementById("welcome-subtitle");
     if (ws && data.welcomeSubtitle) ws.textContent = data.welcomeSubtitle;
+
     const actions = document.getElementById("intro-actions");
-    if (!actions || !Array.isArray(data.starters)) return;
-    actions.innerHTML = "";
-    data.starters.forEach((s) => {
-      if (!s || typeof s !== "object") return;
-      const label = String(s.label || "").trim();
-      if (!label) return;
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "intro-pill";
-      btn.setAttribute("data-prompt", s.prompt == null ? "" : String(s.prompt));
-      btn.textContent = label;
-      actions.appendChild(btn);
-    });
+    if (actions && Array.isArray(data.starters)) {
+      actions.innerHTML = "";
+      data.starters.forEach((s) => {
+        if (!s || typeof s !== "object") return;
+        const label = String(s.label || "").trim();
+        if (!label) return;
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "intro-pill";
+        btn.setAttribute("data-prompt", s.prompt == null ? "" : String(s.prompt));
+        btn.textContent = label;
+        actions.appendChild(btn);
+      });
+    }
   }
 
   (async function loadEmbedConfig() {
