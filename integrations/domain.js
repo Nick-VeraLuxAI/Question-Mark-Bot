@@ -10,6 +10,8 @@ const EventType = {
   CAMPAIGN_LAUNCHED: "campaign.launched",
   CONTEXT_PATCH: "context.patch",
   PROFILE_UPDATED: "profile.updated",
+  /** Synthetic operator test — envelope includes test: true; does not create leads. */
+  ADMIN_WEBHOOK_TEST: "admin.webhook_test",
 };
 
 function buildEnvelope(event, tenantId, data, legacyRootShim = null) {

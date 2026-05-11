@@ -14,6 +14,16 @@ function logProductionBootWarnings() {
   if (process.env.OPENAI_BOOT_OPTIONAL === "1") {
     lines.push("OPENAI_BOOT_OPTIONAL=1 — API will start without OPENAI_API_KEY; every tenant used for chat must have openaiKey in the database.");
   }
+  if (!String(process.env.CHANNEL_EVENTS_SECRET || "").trim()) {
+    lines.push(
+      "CHANNEL_EVENTS_SECRET is unset — POST /api/channels/events will return 503 in production until set (see .env.example)."
+    );
+  }
+  if (!String(process.env.CONSENT_WRITE_SECRET || "").trim()) {
+    lines.push(
+      "CONSENT_WRITE_SECRET is unset — POST /api/compliance/consent will return 503 in production until set (see .env.example)."
+    );
+  }
   if (lines.length) {
     console.warn(`[boot] Production configuration notes (escape hatches / optional modes):\n  - ${lines.join("\n  - ")}`);
   }

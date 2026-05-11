@@ -3,232 +3,784 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Solomon — Dashboard</title>
+  <title>Solomon — Control panel</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/admin/admin.css?v=7" />
+  <link rel="stylesheet" href="/admin/admin.css?v=18" />
 </head>
-<body class="admin-simple">
+<body class="__PORTAL_BODY_CLASS__" data-portal="__PORTAL_DATA__">
   <div class="wrap">
-    <header>
-      <div>
+    <header class="site-header">
+      <div class="site-header-text">
         <h1>
-          <span class="simple-only">Solomon settings</span>
-          <span class="advanced-only">Solomon dashboard</span>
+          <span class="portal-title-operator">VeraLux Operator Console</span>
+          <span class="portal-title-client">Your AI Assistant Dashboard</span>
         </h1>
-        <p class="sub simple-only">See activity, set up chat for your sites, and adjust how it looks.</p>
-        <p class="sub advanced-only">Tenant onboarding, stats, API keys, and outbound webhooks</p>
+        <p class="sub portal-sub-operator">Provisioning, integrations, webhooks, and environment diagnostics for your team.</p>
+        <p class="sub portal-sub-client">Manage how your assistant appears, what it knows, and how it greets visitors on your website.</p>
       </div>
       <div class="toolbar">
-        <div>
-          <label for="tenant-slug"><span class="simple-only">Site / profile</span><span class="advanced-only">Tenant</span></label><br />
-          <input type="text" id="tenant-slug" placeholder="default" autocomplete="off" />
+        <div class="field-compact" id="tenant-slug-row">
+          <label for="tenant-slug"><span class="simple-only">Active site</span><span class="advanced-only">Active tenant</span></label>
+          <input type="text" id="tenant-slug" placeholder="your-site-id" autocomplete="off" spellcheck="false" />
+        </div>
+        <div class="field-compact" id="client-business-row" hidden>
+          <label for="client-business-select">Your business</label>
+          <select id="client-business-select" aria-label="Select business"></select>
         </div>
         <div class="toolbar-end">
-          <button type="button" id="btn-reload">Refresh</button>
+          <button type="button" id="btn-reload" class="btn-primary">Refresh all</button>
         </div>
       </div>
     </header>
 
     <div class="admin-mode-bar" id="admin-mode-bar">
-      <p class="admin-mode-hint muted" id="admin-mode-hint">Guided setup — technical tools stay hidden until you need them.</p>
-      <button type="button" class="secondary" id="btn-toggle-mode">Technical settings…</button>
+      <p class="admin-mode-hint muted" id="admin-mode-hint">Guided view — technical tools stay behind Advanced until you need them.</p>
+      <button type="button" class="secondary" id="btn-toggle-mode">Advanced…</button>
     </div>
 
+    <div id="session-strip" class="session-strip" hidden></div>
+
     <div id="auth-banner" class="banner" hidden></div>
+    <div id="global-toast" class="banner" hidden></div>
 
-    <section class="panel" id="panel-onboarding">
-      <h2>
-        <span class="simple-only">Set up chat for your site</span>
-        <span class="advanced-only">Tenant onboarding</span>
-      </h2>
-      <p class="muted simple-only">
-        Create a profile for each website or brand. Sign in with your company account if your administrator enabled access.
-      </p>
-      <p class="muted advanced-only">
-        Create and check tenants from the dashboard (no CLI). Requires platform SSO with
-        <strong>operator</strong>, <strong>admin</strong>, or <strong>owner</strong>.
-        Chat uses global <code>OPENAI_API_KEY</code> unless you add a per-tenant key below.
-      </p>
-      <div class="form-row">
-        <label for="onb-slug"><span class="simple-only">Site ID</span><span class="advanced-only">New tenant slug</span></label>
-        <input type="text" id="onb-slug" placeholder="acme" autocomplete="off" spellcheck="false" />
+    <section class="panel panel-overview" id="panel-overview" data-admin-section="overview">
+      <div class="panel-head">
+        <h2>Overview</h2>
+        <p class="panel-lead muted simple-only">Snapshot for the site selected above.</p>
+        <p class="panel-lead muted advanced-only">Stats and service signals for the active tenant.</p>
       </div>
-      <div class="form-row">
-        <label for="onb-name"><span class="simple-only">Public name</span><span class="advanced-only">Display name</span></label>
-        <input type="text" id="onb-name" placeholder="Acme Corp" autocomplete="organization" />
+      <div id="dashboard-overview-modules" class="module-zone" data-module-zone="overview">
+        <div id="overview-service" class="overview-service" hidden></div>
+        <div id="overview-status-row" class="overview-status-row"></div>
+        <div id="stats-grid" class="grid overview-stats"></div>
+        <p class="muted mt-1 advanced-only" id="config-line"></p>
       </div>
-      <div class="advanced-only">
-        <div class="form-row">
-          <label for="onb-plan">Plan</label>
-          <select id="onb-plan">
-            <option value="basic">basic</option>
-            <option value="pro">pro</option>
-          </select>
-        </div>
-        <div class="form-row">
-          <label><input type="checkbox" id="onb-use-global-openai" checked /> Use global OpenAI key (recommended if <code>OPENAI_API_KEY</code> is set)</label>
-        </div>
-        <div class="form-row">
-          <label for="onb-openai-key">Per-tenant OpenAI key (optional)</label>
-          <input type="password" id="onb-openai-key" placeholder="sk-…" autocomplete="off" disabled />
-        </div>
-        <div class="form-row">
-          <label><input type="checkbox" id="onb-skip-int-key" /> Skip integration API key (inbound integrations need a key)</label>
-        </div>
-        <div class="form-row">
-          <label><input type="checkbox" id="onb-bootstrap-prompts" checked /> Copy default prompt files into <code>prompts/tenants/&lt;slug&gt;/</code></label>
-        </div>
-        <div class="form-row">
-          <label><input type="checkbox" id="onb-force" /> Update existing tenant if slug already exists (metadata / keys per options)</label>
-        </div>
-      </div>
-      <button type="button" id="btn-onb-create"><span class="simple-only">Create profile</span><span class="advanced-only">Create tenant</span></button>
-      <p class="muted mt-1" id="onb-status"></p>
-      <div id="onb-key-reveal" class="key-reveal" hidden></div>
-      <hr class="onb-hr" />
-      <p class="muted simple-only">Use the same Site ID above for these actions:</p>
-      <p class="muted advanced-only">After create, use the same slug below:</p>
-      <div class="form-row onb-actions">
-        <button type="button" class="secondary" id="btn-onb-verify"><span class="simple-only">Check chat readiness</span><span class="advanced-only">Verify readiness</span></button>
-        <button type="button" class="secondary advanced-only" id="btn-onb-bootstrap">Bootstrap prompts only</button>
-        <button type="button" class="secondary advanced-only" id="btn-onb-rotate-int">Rotate integration key</button>
-      </div>
-      <div id="onb-server-hints" class="banner onb-hints advanced-only" hidden></div>
-      <p class="muted mt-1"><strong class="simple-only">Profiles</strong><strong class="advanced-only">Tenants in database</strong></p>
-      <ul id="onb-directory" class="onb-directory muted"></ul>
     </section>
 
-    <section class="panel" id="panel-stats">
-      <h2><span class="simple-only">Activity</span><span class="advanced-only">Overview</span></h2>
-      <div id="stats-grid" class="grid"></div>
-      <p class="muted mt-1 advanced-only" id="config-line"></p>
+    <section class="panel portal-operator-only" id="panel-capabilities" data-admin-section="capabilities">
+      <div class="panel-head">
+        <h2>Platform capabilities</h2>
+        <p class="muted panel-lead">
+          What this deployment supports today. Labels reflect the <strong>dashboard</strong> — the API may still expose more for operators.
+        </p>
+      </div>
+      <div id="dashboard-capabilities-modules" class="capabilities-grid" aria-label="Capability summary"></div>
     </section>
 
-    <section class="panel" id="panel-branding">
-      <h2><span class="simple-only">Look &amp; feel</span><span class="advanced-only">Branding &amp; embed theme</span></h2>
-      <p class="muted simple-only">Pick light/dark (or match the visitor’s device) and your brand accent for the chat window.</p>
-      <p class="muted advanced-only">
-        Drives <code>/env.css</code> and the chat widget. Theme default for embeds: <strong>auto</strong> follows the visitor’s OS; visitors can still override with the in-widget control.
-      </p>
-      <div class="form-row">
-        <label for="br-theme"><span class="simple-only">Theme</span><span class="advanced-only">Default embed theme</span></label>
-        <select id="br-theme">
-          <option value="auto">Auto (system preference)</option>
-          <option value="light">Light</option>
-          <option value="dark">Dark</option>
-        </select>
+    <section class="panel" id="panel-checklist" data-admin-section="pilot-readiness">
+      <div class="panel-head">
+        <h2><span class="portal-pr-title-operator">Pilot readiness</span><span class="portal-pr-title-client">Launch status</span></h2>
+        <p class="muted panel-lead simple-only portal-pr-lead-operator">
+          A clear <strong>ready / needs attention / operator required</strong> view before you invite customers. This is not a full production audit.
+        </p>
+        <p class="muted panel-lead simple-only portal-pr-lead-client">
+          A simple <strong>ready / needs setup / contact support</strong> view before you put the assistant on your website.
+        </p>
+        <p class="muted panel-lead advanced-only portal-pr-lead-adv">
+          Consolidated from tenant data and <code class="mono">GET /api/admin/pilot-readiness</code> — heuristic scoring only; no live OpenAI or webhook receiver calls.
+        </p>
       </div>
-      <div class="grid branding-grid">
+      <div id="dashboard-setup-modules" class="module-zone" data-module-zone="setup">
+        <div id="dashboard-pilot-readiness-root" data-module-zone="pilot-readiness">
+          <p id="pr-banner" class="section-banner small" hidden></p>
+          <div class="pilot-readiness-summary" id="pr-summary" data-pr-status="">
+            <div class="pilot-readiness-summary-main">
+              <div class="pilot-score-block" aria-hidden="true">
+                <div class="pilot-score-bar"><div id="pr-score-fill" class="pilot-score-fill" style="width: 0%"></div></div>
+                <div id="pr-score-pct" class="pilot-score-pct">—</div>
+              </div>
+              <div class="pilot-readiness-summary-copy">
+                <h3 class="pilot-summary-title" id="pr-summary-title">Loading…</h3>
+                <p class="muted small" id="pr-summary-tenant"></p>
+              </div>
+            </div>
+          </div>
+          <div class="pilot-readiness-toolbar">
+            <button type="button" class="btn-primary" id="btn-pr-refresh">Refresh readiness</button>
+            <span id="pr-last-checked" class="muted small"></span>
+          </div>
+          <div id="pr-groups" class="pilot-readiness-groups"></div>
+          <p id="pr-footnote" class="muted small mt-125"></p>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" id="panel-conversations" data-admin-section="conversations">
+      <div class="panel-head">
+        <h2>Conversations</h2>
+        <p class="muted panel-lead">Recent chat threads for this site — read-only. Requires sign-in with access to view funnel data.</p>
+      </div>
+      <div id="dashboard-conversations-root" class="module-zone admin-data-module" data-module-zone="conversations">
+        <div class="admin-toolbar">
+          <input type="search" id="conv-q" class="admin-search" placeholder="Search summary, session, or message text…" autocomplete="off" />
+          <button type="button" class="secondary" id="btn-conv-search">Search</button>
+          <button type="button" class="secondary" id="btn-conv-refresh">Refresh</button>
+        </div>
+        <p id="conv-banner" class="section-banner small" hidden></p>
+        <div id="conv-loading" class="admin-loading muted small" hidden>Loading…</div>
+        <div class="table-wrap">
+          <table class="admin-data-table" id="conv-table" aria-label="Conversations">
+            <thead>
+              <tr>
+                <th>Last activity</th>
+                <th>Messages</th>
+                <th>Last visitor</th>
+                <th>Last assistant</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="conv-tbody"></tbody>
+          </table>
+        </div>
+        <p id="conv-empty" class="admin-empty muted" hidden>No conversations match your filters yet.</p>
+        <div class="pagination-row" id="conv-pagination"></div>
+      </div>
+    </section>
+
+    <section class="panel" id="panel-leads" data-admin-section="leads">
+      <div class="panel-head">
+        <h2>Leads</h2>
+        <p class="muted panel-lead">Captured contacts from chat — read-only list. Linking to a conversation is not stored in the database yet.</p>
+      </div>
+      <div id="dashboard-leads-root" class="module-zone admin-data-module" data-module-zone="leads">
+        <div class="admin-toolbar">
+          <input type="search" id="leads-q" class="admin-search" placeholder="Search name, email, phone, snippet…" autocomplete="off" />
+          <button type="button" class="secondary" id="btn-leads-search">Search</button>
+          <button type="button" class="secondary" id="btn-leads-refresh">Refresh</button>
+          <button type="button" class="secondary" id="btn-leads-csv" title="Export rows currently loaded">Download CSV</button>
+        </div>
+        <p id="leads-banner" class="section-banner small" hidden></p>
+        <div id="leads-loading" class="admin-loading muted small" hidden>Loading…</div>
+        <div class="table-wrap">
+          <table class="admin-data-table" id="leads-table" aria-label="Leads">
+            <thead>
+              <tr>
+                <th>Created</th>
+                <th>Name</th>
+                <th>Email</th>
+                <th>Phone</th>
+                <th>Source</th>
+                <th>Status</th>
+                <th>Thread</th>
+              </tr>
+            </thead>
+            <tbody id="leads-tbody"></tbody>
+          </table>
+        </div>
+        <p id="leads-empty" class="admin-empty muted" hidden>No leads captured yet for this site.</p>
+        <div class="pagination-row" id="leads-pagination"></div>
+      </div>
+    </section>
+
+    <section class="panel" id="panel-preview" data-admin-section="chat-preview">
+      <div class="panel-head">
+        <h2><span class="portal-chat-preview-title-operator">Chat preview</span><span class="portal-chat-preview-title-client">Website chat preview</span></h2>
+        <p class="muted panel-lead simple-only">Open the hosted chat the way visitors will see it for this site.</p>
+        <p class="muted panel-lead advanced-only">Hosted chat URL with <code>?tenant=</code> query (same origin).</p>
+      </div>
+      <div id="dashboard-bot-modules" class="module-zone" data-module-zone="bot">
+        <div class="action-row">
+          <a id="chat-preview-link" class="btn btn-link" href="#" target="_blank" rel="noopener noreferrer">Open chat in new tab</a>
+          <button type="button" class="secondary" id="btn-copy-chat-url">Copy chat link</button>
+        </div>
+        <p id="preview-banner" class="section-banner muted small" hidden></p>
+        <div class="preview-frame-wrap">
+          <iframe id="chat-preview-frame" title="Chat preview" class="preview-frame" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
+        </div>
+        <p class="muted small mt-1">If the preview stays blank, use “Open chat in new tab” — some browsers restrict embedded pages.</p>
+      </div>
+    </section>
+
+    <section class="panel" id="panel-bot-behavior" data-admin-section="bot-behavior">
+      <div class="panel-head">
+        <h2><span class="portal-bb-title-operator">Bot behavior</span><span class="portal-bb-title-client">Bot instructions</span></h2>
+        <p class="muted panel-lead">
+          Control how the bot speaks and when it should escalate — <strong>without</strong> editing raw system prompts. Guidance is appended after your tenant policy and style prompts and cannot override platform safety rules.
+        </p>
+      </div>
+      <div id="dashboard-bot-behavior-root" class="module-zone" data-module-zone="bot-behavior">
+        <p id="bb-banner" class="section-banner small" hidden></p>
+        <p id="bb-meta" class="muted small behavior-meta-line">
+          <span id="bb-dirty" class="behavior-dirty" hidden>Unsaved changes</span>
+          <span id="bb-last-saved" class="behavior-last-saved"></span>
+        </p>
+        <div class="behavior-layout">
+          <div class="behavior-form-wrap" id="bb-form-wrap">
+            <div class="behavior-form-grid">
+              <div class="form-row behavior-span-2">
+                <label for="bb-greeting">Greeting style</label>
+                <input type="text" id="bb-greeting" maxlength="500" autocomplete="off" placeholder="e.g. Welcome visitors warmly by name when possible" />
+              </div>
+              <div class="form-row">
+                <label for="bb-tone">Tone</label>
+                <select id="bb-tone">
+                  <option value="professional">Professional</option>
+                  <option value="friendly">Friendly</option>
+                  <option value="concise">Concise</option>
+                  <option value="warm">Warm</option>
+                  <option value="luxury">Luxury</option>
+                  <option value="playful">Playful</option>
+                  <option value="technical">Technical</option>
+                </select>
+              </div>
+              <div class="form-row behavior-span-2">
+                <label for="bb-business-role">Business role</label>
+                <textarea id="bb-business-role" class="behavior-textarea" rows="3" maxlength="1000" placeholder="Who the bot represents (e.g. front desk for a dental practice)."></textarea>
+              </div>
+              <div class="form-row behavior-span-2">
+                <label for="bb-primary-goal">Primary goal</label>
+                <textarea id="bb-primary-goal" class="behavior-textarea" rows="3" maxlength="1000" placeholder="What success looks like for a conversation."></textarea>
+              </div>
+              <div class="form-row behavior-span-2">
+                <label for="bb-fallback">Fallback answer</label>
+                <textarea id="bb-fallback" class="behavior-textarea" rows="2" maxlength="1000" placeholder="What to say when the bot cannot answer from knowledge."></textarea>
+              </div>
+              <div class="form-row behavior-span-2">
+                <label for="bb-escalation">Escalation instructions</label>
+                <textarea id="bb-escalation" class="behavior-textarea" rows="3" maxlength="2000" placeholder="When to suggest a human, phone, or ticket."></textarea>
+              </div>
+              <div class="form-row behavior-span-2">
+                <label for="bb-lead-capture">Lead capture instructions</label>
+                <textarea id="bb-lead-capture" class="behavior-textarea" rows="3" maxlength="2000" placeholder="How and when to collect contact details."></textarea>
+              </div>
+              <div class="form-row behavior-span-2">
+                <label for="bb-avoid">Topics / responses to avoid</label>
+                <textarea id="bb-avoid" class="behavior-textarea" rows="2" maxlength="2000" placeholder="Subjects or promises the bot must not make."></textarea>
+              </div>
+              <div class="form-row behavior-span-2">
+                <label for="bb-special">Special business rules</label>
+                <textarea id="bb-special" class="behavior-textarea" rows="3" maxlength="3000" placeholder="Other short, concrete rules for this business."></textarea>
+              </div>
+            </div>
+            <div class="behavior-actions">
+              <button type="button" class="btn-primary" id="btn-bb-save">Save behavior</button>
+              <button type="button" class="secondary" id="btn-bb-reset">Reset to defaults</button>
+            </div>
+          </div>
+          <aside class="behavior-side">
+            <div class="behavior-preview-card" id="bb-preview-card" aria-live="polite">
+              <h3 class="behavior-preview-title">Preview</h3>
+              <p class="muted small behavior-preview-lead">How guidance may appear to the model (abbreviated).</p>
+              <div class="behavior-preview-block">
+                <span class="behavior-preview-label">Tone</span>
+                <span id="bb-preview-tone" class="behavior-tone-pill">professional</span>
+              </div>
+              <p id="bb-preview-greeting" class="behavior-preview-text muted"></p>
+              <p id="bb-preview-fallback" class="behavior-preview-text muted small"></p>
+              <p id="bb-preview-escalation" class="behavior-preview-text muted small"></p>
+            </div>
+            <div class="behavior-preview-card advanced-only" id="bb-raw-placeholder">
+              <h3 class="behavior-preview-title">Raw prompts</h3>
+              <p class="muted small">System / policy / voice text and PromptVersion are not edited here. Use your platform’s prompt workflow or API until a dedicated tool ships.</p>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" id="panel-install" data-admin-section="website-install">
+      <div class="panel-head">
+        <h2><span class="portal-install-title-operator">Website install</span><span class="portal-install-title-client">Website chat</span></h2>
+        <p class="muted panel-lead">
+          Solomon serves a <strong>hosted chat page</strong> on this domain. Most teams link to it or embed it in an iframe — there is no separate drop-in script tag in this build.
+        </p>
+      </div>
+      <div id="dashboard-website-modules" class="module-zone" data-module-zone="website">
+        <div class="install-block">
+          <label class="install-label">Hosted chat link</label>
+          <div class="copy-row">
+            <code id="install-chat-url" class="copy-target"></code>
+            <button type="button" class="secondary" id="btn-copy-install-url">Copy</button>
+          </div>
+        </div>
+        <div class="install-block">
+          <label class="install-label">Example iframe</label>
+          <p class="muted small">Replace width/height to fit your layout. For production, confirm allowed browser origins (CORS) with your platform operator.</p>
+          <pre id="install-iframe-snippet" class="snippet"></pre>
+          <button type="button" class="secondary" id="btn-copy-iframe">Copy iframe code</button>
+        </div>
+        <div id="install-banner" class="banner info small-banner mt-1" role="note">
+          <strong>Operator note:</strong> browsers calling this API from other domains need the deployment’s CORS allowlist configured on the server. Customers usually link to your hosted chat instead of cross-origin API calls.
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" id="panel-branding" data-admin-section="branding">
+      <div class="panel-head">
+        <h2>Look &amp; feel</h2>
+        <p class="muted panel-lead simple-only">Theme and colors for the chat window visitors see.</p>
+        <p class="muted panel-lead advanced-only">Maps to <code>/env.css</code> and public embed config. Theme <strong>auto</strong> follows the visitor’s device; they can still override inside chat.</p>
+      </div>
+      <div id="dashboard-business-modules" class="module-zone" data-module-zone="business">
+        <div class="branding-layout">
+          <div class="branding-fields">
+            <div class="form-row">
+              <label for="br-theme"><span class="simple-only">Color mode</span><span class="advanced-only">Default embed theme</span></label>
+              <select id="br-theme">
+                <option value="auto">Auto (match visitor device)</option>
+                <option value="light">Light</option>
+                <option value="dark">Dark</option>
+              </select>
+            </div>
+            <div class="grid branding-grid">
+              <div class="form-row">
+                <label for="br-brand"><span class="simple-only">Brand accent</span><span class="advanced-only">Brand color</span></label>
+                <input type="text" id="br-brand" placeholder="#6B705C" autocomplete="off" />
+              </div>
+              <div class="form-row advanced-only">
+                <label for="br-brand-hover">Button hover color</label>
+                <input type="text" id="br-brand-hover" placeholder="#556052" autocomplete="off" />
+              </div>
+              <div class="form-row">
+                <label for="br-bot-bg"><span class="simple-only">Chat bubble background</span><span class="advanced-only">Assistant bubble background</span></label>
+                <input type="text" id="br-bot-bg" placeholder="#F4F1EA" autocomplete="off" />
+              </div>
+              <div class="form-row">
+                <label for="br-bot-text"><span class="simple-only">Chat text</span><span class="advanced-only">Assistant text color</span></label>
+                <input type="text" id="br-bot-text" placeholder="#2C2C2C" autocomplete="off" />
+              </div>
+              <div class="form-row advanced-only">
+                <label for="br-user-bg">Visitor bubble accent</label>
+                <input type="text" id="br-user-bg" placeholder="#8A7B68" autocomplete="off" />
+              </div>
+              <div class="form-row advanced-only">
+                <label for="br-user-text">Visitor bubble text</label>
+                <input type="text" id="br-user-text" placeholder="#FFFFFF" autocomplete="off" />
+              </div>
+              <div class="form-row advanced-only">
+                <label for="br-glass-bg">Glass / card background</label>
+                <input type="text" id="br-glass-bg" placeholder="rgba(…)" autocomplete="off" />
+              </div>
+              <div class="form-row advanced-only">
+                <label for="br-glass-top">Glass highlight (top)</label>
+                <input type="text" id="br-glass-top" placeholder="rgba(…)" autocomplete="off" />
+              </div>
+              <div class="form-row advanced-only">
+                <label for="br-blur">Backdrop blur</label>
+                <input type="text" id="br-blur" placeholder="10px" autocomplete="off" />
+              </div>
+              <div class="form-row advanced-only">
+                <label for="br-font">Font (CSS)</label>
+                <input type="text" id="br-font" placeholder="Inter, system-ui, sans-serif" autocomplete="off" />
+              </div>
+              <div class="form-row advanced-only">
+                <label for="br-watermark">Watermark image URL</label>
+                <input type="text" id="br-watermark" placeholder="https://…" autocomplete="off" />
+              </div>
+            </div>
+            <div class="form-row advanced-only">
+              <label for="br-header-glow">Header gradient</label>
+              <input type="text" id="br-header-glow" class="wide" placeholder="radial-gradient(…)" autocomplete="off" />
+            </div>
+            <button type="button" id="btn-save-branding" class="btn-primary"><span class="simple-only">Save look &amp; feel</span><span class="advanced-only">Save branding</span></button>
+            <p class="muted mt-1" id="branding-status"></p>
+          </div>
+          <div class="branding-preview-col">
+            <p class="preview-card-label muted small">Live preview (approximate)</p>
+            <div id="branding-preview-card" class="branding-preview-card" aria-hidden="true">
+              <div class="bp-header" id="bp-header">Chat</div>
+              <div class="bp-row bp-assistant" id="bp-assistant">
+                <span class="bp-dot"></span>
+                <span class="bp-bubble" id="bp-bubble-a">Hello — how can we help today?</span>
+              </div>
+              <div class="bp-row bp-user">
+                <span class="bp-bubble bp-bubble-user" id="bp-bubble-u">Example visitor message</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="dashboard-business-profile-root" class="module-zone admin-data-module business-profile-panel" data-module-zone="business-profile">
+          <h3 class="h3-section"><span class="portal-bp-h3-operator">Business profile</span><span class="portal-bp-h3-client">Business info</span></h3>
+          <p class="muted small">
+            This gives the bot accurate <strong>business context</strong> (identity, contact, hours, services). It is injected into chat after policy and voice — not a replacement for safety rules or legal text.
+          </p>
+          <p id="bp-banner" class="section-banner small" hidden></p>
+          <p id="bp-dirty" class="behavior-dirty" hidden>Unsaved changes</p>
+          <div id="bp-form-wrap" class="business-profile-layout">
+            <div class="business-profile-form-col">
+              <div class="business-profile-form-grid">
+                <div class="form-row business-profile-span-2">
+                  <label for="bp-business-name">Business name</label>
+                  <input type="text" id="bp-business-name" class="bp-field" maxlength="200" autocomplete="organization" />
+                </div>
+                <div class="form-row business-profile-span-2">
+                  <label for="bp-short-description">Short description</label>
+                  <textarea id="bp-short-description" class="bp-field business-profile-textarea" rows="3" maxlength="1000"></textarea>
+                </div>
+                <div class="form-row business-profile-span-2">
+                  <label for="bp-services">Services</label>
+                  <textarea id="bp-services" class="bp-field business-profile-textarea" rows="4" maxlength="3000"></textarea>
+                </div>
+                <div class="form-row business-profile-span-2">
+                  <label for="bp-service-areas">Service areas</label>
+                  <textarea id="bp-service-areas" class="bp-field business-profile-textarea" rows="2" maxlength="2000"></textarea>
+                </div>
+                <div class="form-row business-profile-span-2">
+                  <label for="bp-address">Address</label>
+                  <input type="text" id="bp-address" class="bp-field" maxlength="500" autocomplete="street-address" />
+                </div>
+                <div class="form-row">
+                  <label for="bp-phone">Phone</label>
+                  <input type="text" id="bp-phone" class="bp-field" maxlength="100" autocomplete="tel" />
+                </div>
+                <div class="form-row">
+                  <label for="bp-email">Email</label>
+                  <input type="email" id="bp-email" class="bp-field" maxlength="200" autocomplete="email" />
+                </div>
+                <p class="muted small business-profile-hint business-profile-span-2">Use a valid email format if provided.</p>
+                <div class="form-row business-profile-span-2">
+                  <label for="bp-website">Website</label>
+                  <input type="url" id="bp-website" class="bp-field" maxlength="500" placeholder="https://…" />
+                </div>
+                <div class="form-row business-profile-span-2">
+                  <label for="bp-booking-url">Booking URL</label>
+                  <input type="url" id="bp-booking-url" class="bp-field" maxlength="500" placeholder="https://…" />
+                </div>
+                <p class="muted small business-profile-hint business-profile-span-2">Website and booking links must start with <code class="mono">https://</code> or <code class="mono">http://</code> when set.</p>
+                <div class="form-row business-profile-span-2">
+                  <label for="bp-hours">Hours</label>
+                  <textarea id="bp-hours" class="bp-field business-profile-textarea" rows="3" maxlength="2000" placeholder="e.g. Mon–Fri 9–5"></textarea>
+                </div>
+                <div class="form-row business-profile-span-2">
+                  <label for="bp-after-hours">After-hours message</label>
+                  <textarea id="bp-after-hours" class="bp-field business-profile-textarea" rows="2" maxlength="1000"></textarea>
+                </div>
+                <div class="form-row business-profile-span-2">
+                  <label for="bp-escalation">Escalation contact</label>
+                  <textarea id="bp-escalation" class="bp-field business-profile-textarea" rows="2" maxlength="1000" placeholder="Who should staff reach for urgent issues?"></textarea>
+                </div>
+                <div class="form-row business-profile-span-2">
+                  <label for="bp-policies">Policies / important rules</label>
+                  <textarea id="bp-policies" class="bp-field business-profile-textarea" rows="3" maxlength="3000"></textarea>
+                </div>
+              </div>
+              <div class="business-profile-actions">
+                <button type="button" class="btn-primary" id="btn-bp-save">Save business profile</button>
+                <button type="button" class="secondary" id="btn-bp-reset">Clear all fields</button>
+              </div>
+              <p class="muted small" id="bp-last-updated"></p>
+            </div>
+            <div class="business-profile-preview-col">
+              <p class="preview-card-label muted small">Preview (how the bot may summarize context)</p>
+              <div class="business-profile-preview-card" id="bp-preview-card">
+                <h4 class="business-profile-preview-title" id="bp-preview-name">—</h4>
+                <p class="business-profile-preview-line muted small" id="bp-preview-contact"></p>
+                <p class="business-profile-preview-line" id="bp-preview-hours"></p>
+                <p class="business-profile-preview-line muted small" id="bp-preview-services"></p>
+                <p class="business-profile-preview-line" id="bp-preview-booking"></p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="dashboard-business-stubs" class="stub-modules-row" data-stub-mount="business" aria-label="Roadmap modules"></div>
+      </div>
+    </section>
+
+    <section class="panel" id="panel-knowledge" data-admin-section="knowledge">
+      <div class="panel-head">
+        <h2>Knowledge base</h2>
+        <p class="muted panel-lead">
+          Text your bot can use for <strong>keyword</strong> retrieval (same path as chat RAG). No file upload or embeddings in this build — add plain text entries. Archived items stay listed but are excluded from replies.
+        </p>
+      </div>
+      <div id="dashboard-knowledge-root" class="module-zone admin-data-module" data-module-zone="knowledge">
+        <div class="admin-toolbar">
+          <input type="search" id="kn-q" class="admin-search" placeholder="Search title, source, or body…" autocomplete="off" />
+          <button type="button" class="secondary" id="btn-kn-search">Search</button>
+          <button type="button" class="secondary" id="btn-kn-refresh">Refresh</button>
+          <button type="button" class="secondary" id="btn-kn-add">Add knowledge</button>
+        </div>
+        <div class="knowledge-retrieval-row">
+          <label for="kn-retrieval-q" class="muted small knowledge-retrieval-label">Try retrieval (keyword overlap, no AI call)</label>
+          <div class="knowledge-retrieval-controls">
+            <input type="text" id="kn-retrieval-q" class="admin-search knowledge-retrieval-input" placeholder="Sample question…" autocomplete="off" />
+            <button type="button" class="secondary" id="btn-kn-retrieval">Test</button>
+          </div>
+          <pre id="kn-retrieval-out" class="knowledge-retrieval-out" hidden></pre>
+        </div>
+        <p id="kn-banner" class="section-banner small" hidden></p>
+        <div id="kn-loading" class="admin-loading muted small" hidden>Loading…</div>
+        <div class="table-wrap">
+          <table class="admin-data-table" id="kn-table" aria-label="Knowledge documents">
+            <thead>
+              <tr>
+                <th>Updated</th>
+                <th>Title</th>
+                <th>Source</th>
+                <th>Status</th>
+                <th>Chunks</th>
+                <th>Preview</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="kn-tbody"></tbody>
+          </table>
+        </div>
+        <p id="kn-empty" class="admin-empty muted" hidden>No knowledge has been added yet.</p>
+        <div class="pagination-row" id="kn-pagination"></div>
+      </div>
+    </section>
+
+    <section class="panel panel-operator" id="panel-onboarding" data-admin-section="operations">
+      <div id="dashboard-operations-modules" class="module-zone" data-module-zone="operations">
+        <div id="operations-lock-banner" class="banner info small-banner" hidden></div>
+        <div class="callout callout-operator">
+          <strong class="simple-only">Platform operator</strong>
+          <strong class="advanced-only">Operator / platform</strong>
+          <p class="simple-only muted small mt-0">
+            Creating a new site profile is usually done by your implementation team. If you only manage an existing site, you can ignore this section.
+          </p>
+          <p class="advanced-only muted small mt-0">
+            Requires platform SSO with role <strong>operator</strong>, <strong>admin</strong>, or <strong>owner</strong>. Chat uses the platform-managed AI key unless you add an optional dedicated key below.
+          </p>
+        </div>
+        <h2 class="h2-tight">
+          <span class="simple-only">New site profile</span>
+          <span class="advanced-only">Tenant provisioning</span>
+        </h2>
         <div class="form-row">
-          <label for="br-brand"><span class="simple-only">Brand accent color</span><span class="advanced-only">Brand color</span></label>
-          <input type="text" id="br-brand" placeholder="#6B705C" />
+          <label for="onb-slug"><span class="simple-only">Site ID / tenant slug</span><span class="advanced-only">New tenant slug</span></label>
+          <input type="text" id="onb-slug" placeholder="acme" autocomplete="off" spellcheck="false" />
         </div>
-        <div class="form-row advanced-only">
-          <label for="br-brand-hover">Brand hover</label>
-          <input type="text" id="br-brand-hover" placeholder="#556052" />
+        <div class="form-row">
+          <label for="onb-name"><span class="simple-only">Business display name</span><span class="advanced-only">Display name</span></label>
+          <input type="text" id="onb-name" placeholder="Acme Corp" autocomplete="organization" />
         </div>
-        <div class="form-row advanced-only">
-          <label for="br-bot-bg">Bot bubble bg</label>
-          <input type="text" id="br-bot-bg" placeholder="#F4F1EA" />
+        <p class="muted small advanced-only">Most customers should rely on the platform-managed AI connection unless they need separate vendor billing.</p>
+        <div class="advanced-only">
+          <div class="form-row">
+            <label for="onb-plan">Package / plan</label>
+            <select id="onb-plan">
+              <option value="basic">basic</option>
+              <option value="pro">pro</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label><input type="checkbox" id="onb-use-global-openai" checked /> Use platform-managed OpenAI key (recommended when the host has configured a global key)</label>
+          </div>
+          <div class="form-row">
+            <label for="onb-openai-key">Optional dedicated OpenAI key</label>
+            <input type="password" id="onb-openai-key" placeholder="sk-…" autocomplete="off" disabled />
+          </div>
+          <div class="form-row">
+            <label><input type="checkbox" id="onb-skip-int-key" /> Skip integration API key (inbound CRM/API calls will not work until a key exists)</label>
+          </div>
+          <div class="form-row">
+            <label><input type="checkbox" id="onb-bootstrap-prompts" checked /> Copy default prompt files on the server into <code>prompts/tenants/&lt;slug&gt;/</code></label>
+          </div>
+          <div class="form-row warn-row">
+            <label><input type="checkbox" id="onb-force" /> Force update if this Site ID already exists (can overwrite metadata and keys depending on options — use with care)</label>
+          </div>
         </div>
-        <div class="form-row advanced-only">
-          <label for="br-bot-text">Bot text</label>
-          <input type="text" id="br-bot-text" placeholder="#2C2C2C" />
+        <button type="button" id="btn-onb-create" class="btn-primary"><span class="simple-only">Create site profile</span><span class="advanced-only">Create or update tenant</span></button>
+        <p class="muted mt-1" id="onb-status"></p>
+        <div id="onb-key-reveal" class="key-reveal" hidden></div>
+        <hr class="onb-hr" />
+        <p class="muted simple-only">Use the same Site ID as in “Active site” for these actions:</p>
+        <p class="muted advanced-only">Use the same slug as the active tenant for:</p>
+        <div class="form-row onb-actions">
+          <button type="button" class="secondary" id="btn-onb-verify"><span class="simple-only">Run readiness check</span><span class="advanced-only">Verify readiness</span></button>
+          <button type="button" class="secondary advanced-only" id="btn-onb-bootstrap">Copy default prompt files only</button>
+          <button type="button" class="secondary advanced-only" id="btn-onb-rotate-int">Rotate integration API key</button>
         </div>
-        <div class="form-row advanced-only">
-          <label for="br-user-bg">User accent</label>
-          <input type="text" id="br-user-bg" placeholder="#8A7B68" />
-        </div>
-        <div class="form-row advanced-only">
-          <label for="br-user-text">User bubble text</label>
-          <input type="text" id="br-user-text" placeholder="#FFFFFF" />
-        </div>
-        <div class="form-row advanced-only">
-          <label for="br-glass-bg">Glass background</label>
-          <input type="text" id="br-glass-bg" placeholder="rgba(…)" />
-        </div>
-        <div class="form-row advanced-only">
-          <label for="br-glass-top">Glass top</label>
-          <input type="text" id="br-glass-top" placeholder="rgba(…)" />
-        </div>
-        <div class="form-row advanced-only">
-          <label for="br-blur">Blur</label>
-          <input type="text" id="br-blur" placeholder="10px" />
-        </div>
-        <div class="form-row advanced-only">
-          <label for="br-font">Font family (CSS)</label>
-          <input type="text" id="br-font" placeholder="Inter, system-ui, sans-serif" />
-        </div>
-        <div class="form-row advanced-only">
-          <label for="br-watermark">Watermark URL</label>
-          <input type="text" id="br-watermark" placeholder="https://…" />
-        </div>
+        <div id="onb-server-hints" class="banner onb-hints advanced-only" hidden></div>
+        <p class="muted mt-1"><strong class="simple-only">Existing sites</strong><strong class="advanced-only">Tenants in database</strong></p>
+        <ul id="onb-directory" class="onb-directory muted"></ul>
       </div>
-      <div class="form-row advanced-only">
-        <label for="br-header-glow">Header glow (CSS gradient)</label>
-        <input type="text" id="br-header-glow" class="wide" placeholder="radial-gradient(…)" />
-      </div>
-      <button type="button" id="btn-save-branding"><span class="simple-only">Save look &amp; feel</span><span class="advanced-only">Save branding</span></button>
-      <p class="muted mt-1" id="branding-status"></p>
     </section>
 
-    <section class="panel advanced-only">
-      <h2>Integration API key</h2>
-      <p class="muted">Used for <code>/api/integrations/v1/*</code> inbound routes. Shown once after rotate.</p>
-      <button type="button" id="btn-rotate-key">Rotate API key</button>
-      <div id="key-reveal" class="key-reveal" hidden></div>
+    <section class="panel advanced-only" id="panel-future-dashboard" data-admin-section="roadmap-stubs">
+      <div class="panel-head">
+        <h2>Roadmap modules</h2>
+        <p class="muted panel-lead">
+          Planned dashboard tools. Backend routes may already exist — UI wiring comes in a later phase. Authorization still enforced server-side.
+        </p>
+      </div>
+      <div class="future-zones-two">
+        <div id="dashboard-analytics-modules" class="module-zone stub-zone" data-module-zone="analytics"></div>
+        <div id="dashboard-security-modules" class="module-zone stub-zone" data-module-zone="security"></div>
+      </div>
     </section>
 
-    <section class="panel advanced-only">
-      <h2>Outbound webhooks</h2>
-      <p class="muted">Signed POSTs with canonical <code>schemaVersion</code> / <code>event</code>. Empty event list = all events.</p>
+    <section class="panel advanced-only" id="panel-integrations" data-admin-section="integrations">
+      <div class="panel-head">
+        <h2>Advanced — integrations</h2>
+        <p class="muted panel-lead">
+          The <strong>integration API key</strong> authenticates other systems calling inbound Solomon APIs. Rotating it immediately invalidates the old key — update CRM, middleware, and scripts before rotating in production.
+        </p>
+      </div>
+      <div id="dashboard-advanced-modules" class="module-zone" data-module-zone="integrations">
+        <div class="subpanel">
+          <h3 class="h3-section">Integration API key</h3>
+          <p class="muted small">Shown once after rotate. Store it in a secrets manager — not in email or chat.</p>
+          <button type="button" id="btn-rotate-key">Rotate integration API key</button>
+          <div id="key-reveal" class="key-reveal" hidden></div>
+          <p id="key-rotate-status" class="section-banner muted small" hidden></p>
+        </div>
 
-      <div class="form-row">
-        <label for="wh-endpoint">Endpoint URL</label>
-        <input type="text" id="wh-endpoint" placeholder="https://your-system.com/hooks/solomon" />
-      </div>
-      <div class="form-row">
-        <label for="wh-secret">Secret (optional, HMAC)</label>
-        <input type="text" id="wh-secret" placeholder="shared secret" autocomplete="off" />
-      </div>
-      <div class="form-row">
-        <label>Events (leave unchecked for “all”)</label>
-        <div class="chips" id="wh-events"></div>
-      </div>
-      <button type="button" id="btn-add-webhook">Add webhook</button>
+        <div class="subpanel">
+          <h3 class="h3-section">Outbound webhooks</h3>
+          <p class="muted small">HTTPS POST payloads for events such as new leads. Leave all event types unchecked to receive every event type.</p>
 
-      <table class="mt-125">
-        <thead>
-          <tr>
-            <th>Endpoint</th>
-            <th>Enabled</th>
-            <th>Events</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody id="wh-tbody"></tbody>
-      </table>
+          <div class="form-row">
+            <label for="wh-endpoint">Endpoint URL</label>
+            <input type="text" id="wh-endpoint" placeholder="https://your-system.com/hooks/solomon" autocomplete="off" />
+          </div>
+          <div class="form-row">
+            <label for="wh-secret">Signing secret (optional)</label>
+            <input type="text" id="wh-secret" placeholder="shared secret" autocomplete="off" />
+          </div>
+          <div class="form-row">
+            <label>Event types</label>
+            <div class="chips" id="wh-events"></div>
+          </div>
+          <button type="button" id="btn-add-webhook">Add webhook</button>
+          <p id="wh-section-status" class="section-banner muted small" hidden></p>
+
+          <div class="table-wrap mt-125">
+            <table>
+              <thead>
+                <tr>
+                  <th>Endpoint</th>
+                  <th>On</th>
+                  <th>Events</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="wh-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div id="dashboard-webhook-testing-root" class="subpanel module-zone" data-module-zone="webhook-testing">
+          <h3 class="h3-section">Webhook test &amp; health</h3>
+          <p class="muted small">
+            Sends a <strong>marked test envelope</strong> to your outbound webhook(s). It does <strong>not</strong> create a real lead or mutate CRM data. Use it after adding or changing endpoints.
+          </p>
+          <p id="wht-health" class="wht-health-line muted small" aria-live="polite"></p>
+          <p id="wht-banner" class="section-banner small" hidden></p>
+          <div class="wht-controls">
+            <div class="form-row">
+              <label for="wht-webhook-select">Webhook</label>
+              <select id="wht-webhook-select">
+                <option value="__all__">All enabled (matching event)</option>
+              </select>
+            </div>
+            <div class="form-row">
+              <label for="wht-event-type">Test event type</label>
+              <select id="wht-event-type"></select>
+            </div>
+            <button type="button" class="btn-primary" id="btn-wht-send">Send test</button>
+          </div>
+          <p id="wht-loading" class="admin-loading muted small" hidden>Sending…</p>
+          <p id="wht-empty" class="admin-empty muted" hidden>Add a webhook above, then run a test.</p>
+          <p id="wht-note" class="muted small wht-note" hidden></p>
+          <p id="wht-last" class="muted small wht-last-tested"></p>
+          <div class="table-wrap wht-results-wrap" hidden>
+            <table class="admin-data-table wht-results-table" aria-label="Webhook test results">
+              <thead>
+                <tr>
+                  <th>Endpoint</th>
+                  <th>HTTP</th>
+                  <th>Result</th>
+                  <th>Duration</th>
+                  <th>Error</th>
+                </tr>
+              </thead>
+              <tbody id="wht-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
     </section>
 
-    <p class="muted mt-2 advanced-only">
-      Auth: platform SSO cookie from <code>/sso/callback</code>. Cookie sessions require a CSRF token (fetched automatically before each change). For local dev you may use a Bearer token instead.
+    <p id="sso-dev-hint" class="muted mt-2 small advanced-only">
+      Sessions: platform SSO via <code>/sso/callback</code> sets an httpOnly cookie. Browser saves use an automatic CSRF token. For local development only, an optional developer access token is available below.
     </p>
-    <section class="panel advanced-only" id="dev-section" __DEV_SECTION_ATTRS__>
-      <h2>Developer</h2>
-      <p class="muted dev-warn">
-        Storing Bearer tokens in the browser is an <strong>XSS risk</strong> and is discouraged for production / SOC 2; prefer SSO only.
-      </p>
-      <div class="form-row">
-        <label for="dev-token">Authorization Bearer (optional)</label>
-        <input type="text" id="dev-token" placeholder="eyJ…" autocomplete="off" />
+    <section class="panel advanced-only" id="dev-section" __DEV_SECTION_ATTRS__ data-admin-section="developer">
+      <div id="dashboard-developer-modules" class="module-zone" data-module-zone="developer">
+        <h2>Developer</h2>
+        <p class="muted dev-warn">
+          Storing a developer access token (Bearer) in the browser is an <strong>XSS risk</strong> — avoid in production; prefer SSO.
+        </p>
+        <div class="form-row">
+          <label for="dev-token">Developer access token (Bearer, optional)</label>
+          <input type="text" id="dev-token" placeholder="eyJ…" autocomplete="off" />
+        </div>
+        <button type="button" class="secondary" id="btn-save-token">Save token (localStorage)</button>
+        <button type="button" class="secondary" id="btn-clear-token">Clear</button>
+        <p id="admin-ui-version" class="muted small mt-125 mono" aria-live="polite"></p>
       </div>
-      <button type="button" class="secondary" id="btn-save-token">Save token (localStorage)</button>
-      <button type="button" class="secondary" id="btn-clear-token">Clear</button>
     </section>
+
+    <footer class="admin-footer" role="contentinfo">
+      <p id="admin-ui-version-global" class="muted small mono"></p>
+    </footer>
+
+    <div id="knowledge-add-modal" class="modal-overlay" hidden role="dialog" aria-modal="true" aria-labelledby="knowledge-add-title">
+      <div class="modal-sheet modal-sheet--wide">
+        <div class="modal-head">
+          <h3 id="knowledge-add-title">Add knowledge</h3>
+          <button type="button" class="secondary modal-close" id="btn-kn-add-close" aria-label="Close">Close</button>
+        </div>
+        <div class="knowledge-form-body">
+          <div class="form-row">
+            <label for="kn-add-title">Title <span class="muted">(required)</span></label>
+            <input type="text" id="kn-add-title" class="wide" maxlength="500" autocomplete="off" />
+          </div>
+          <div class="form-row">
+            <label for="kn-add-source">Source <span class="muted">(optional URL or label)</span></label>
+            <input type="text" id="kn-add-source" class="wide" maxlength="2000" autocomplete="off" />
+          </div>
+          <div class="form-row">
+            <label for="kn-add-content">Content <span class="muted">(required, plain text)</span></label>
+            <textarea id="kn-add-content" class="knowledge-textarea" rows="12" maxlength="100000" placeholder="Paste or type facts, policies, FAQs…"></textarea>
+          </div>
+          <p id="kn-add-status" class="muted small" role="status"></p>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="secondary" id="btn-kn-add-cancel">Cancel</button>
+          <button type="button" class="btn-primary" id="btn-kn-save">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="knowledge-detail-modal" class="modal-overlay" hidden role="dialog" aria-modal="true" aria-labelledby="knowledge-detail-title">
+      <div class="modal-sheet modal-sheet--wide">
+        <div class="modal-head">
+          <h3 id="knowledge-detail-title">Knowledge</h3>
+          <button type="button" class="secondary modal-close" id="btn-kn-detail-close" aria-label="Close">Close</button>
+        </div>
+        <p id="knowledge-detail-meta" class="muted small knowledge-detail-meta"></p>
+        <div id="knowledge-detail-chunks" class="knowledge-detail-chunks"></div>
+        <div class="modal-actions">
+          <button type="button" class="secondary" id="btn-kn-detail-copy">Copy all chunk text</button>
+          <button type="button" class="secondary" id="btn-kn-archive">Archive</button>
+          <button type="button" class="secondary" id="btn-kn-restore">Restore</button>
+          <button type="button" class="danger" id="btn-kn-delete">Delete permanently</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="transcript-modal" class="modal-overlay" hidden role="dialog" aria-modal="true" aria-labelledby="transcript-modal-title">
+      <div class="modal-sheet">
+        <div class="modal-head">
+          <h3 id="transcript-modal-title">Transcript</h3>
+          <button type="button" class="secondary modal-close" id="btn-transcript-close" aria-label="Close">Close</button>
+        </div>
+        <p id="transcript-meta" class="muted small"></p>
+        <div id="transcript-body" class="transcript-body"></div>
+        <div class="modal-actions">
+          <button type="button" class="secondary" id="btn-transcript-copy">Copy transcript</button>
+        </div>
+      </div>
+    </div>
   </div>
 
-  <script src="/admin/admin.js?v=7" defer nonce="__CSP_NONCE__"></script>
+  <script src="/admin/admin.js?v=18" defer nonce="__CSP_NONCE__"></script>
 </body>
 </html>

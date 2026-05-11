@@ -58,6 +58,22 @@ See **`.env.example`** for the full contract:
 
 Docker Compose overrides **`DATABASE_URL`** and **`REDIS_URL`** for `api` / `worker` to use internal hostnames.
 
+### Multi-tenant guardrails (shared admin / multiple pilot clients on one deployment)
+
+Tenant context for HTTP APIs is resolved from **platform SSO override** (when mapped), then **`X-Tenant`**, **`?tenant=`**, **hostname subdomain**, then **`DEFAULT_TENANT`**. Admin routes rely on **`loadTenant`** plus **platform SSO**; **`STRICT_TENANT_BINDING=1`** ensures the requested tenant matches the platform tenant slug.
+
+For **production** on a shared or multi-client host, set at least:
+
+| Variable | Recommended | Purpose |
+|----------|-------------|---------|
+| `STRICT_TENANT_BINDING` | `1` | Fail closed when `?tenant` / `X-Tenant` disagrees with platform JWT tenant. **`/api/ready` returns 503** in production if `PLATFORM_URL` is set but this is not `1`. |
+| `ALLOW_PUBLIC_DEFAULT_TENANT_FALLBACK` | unset or `0` | When not `1`, unknown slug for **`POST /message`** and **`GET /api/public/embed-config`** returns **404** instead of silently using the default tenant. In **`NODE_ENV !== production`**, fallback stays enabled for local dev. |
+| `CHANNEL_EVENTS_SECRET` | long random string | **`POST /api/channels/events`** requires header **`X-Channel-Events-Secret`**. Missing in production → **503**. |
+| `CONSENT_WRITE_SECRET` | long random string | **`POST /api/compliance/consent`** requires **`X-Consent-Write-Secret`**. Missing in production → **503**. |
+| `ALLOW_ADMIN_BEARER_DEV_TOOLS` | `0` or unset in prod | Hides the dev Bearer panel on `/admin` unless explicitly enabled. |
+
+See **`.env.example`** for copy-paste defaults and comments.
+
 ## Tenants & provisioning (no SQL)
 
 ### Preferred: Admin dashboard

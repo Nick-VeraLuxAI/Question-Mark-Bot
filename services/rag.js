@@ -18,13 +18,20 @@ function scoreOverlap(queryTokens, text) {
 
 async function retrieveContext(prisma, tenantId, question, limit = 4) {
   const rows = await prisma.knowledgeChunk.findMany({
-    where: { tenantId },
+    where: {
+      tenantId,
+      /** Archived documents stay in DB for audit but must not influence replies. */
+      document: { status: "active" },
+    },
     orderBy: { createdAt: "desc" },
     take: 100,
     include: { document: true },
   });
+  const activeRows = rows.filter(
+    (row) => row.document && String(row.document.status || "").toLowerCase() === "active"
+  );
   const qTokens = tokenize(question);
-  const ranked = rows
+  const ranked = activeRows
     .map((row) => ({ row, score: scoreOverlap(qTokens, row.content) }))
     .filter((x) => x.score > 0)
     .sort((a, b) => b.score - a.score)

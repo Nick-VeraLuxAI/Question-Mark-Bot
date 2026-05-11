@@ -83,7 +83,10 @@ Variables observed in application code (non-test). **Production-critical** behav
 | `PROMPTS_DIR` | Override prompt file root | |
 | `HOT_RELOAD_PROMPTS` | `1` to disable prompt file cache | |
 | `PLATFORM_URL` | Platform SSO verify endpoint base | Defaults to `http://localhost:4000` |
-| `STRICT_TENANT_BINDING` | `1` enforces platform tenant vs header/query match | |
+| `STRICT_TENANT_BINDING` | `1` enforces platform tenant vs header/query match | **Production `/api/ready` fails** if `PLATFORM_URL` is set and this is not `1` |
+| `ALLOW_PUBLIC_DEFAULT_TENANT_FALLBACK` | `1` allows legacy default-tenant fallback for unknown slug on `POST /message` and embed-config | **Off in production** unless explicitly set |
+| `CHANNEL_EVENTS_SECRET` | Shared secret for `POST /api/channels/events` (`X-Channel-Events-Secret`) | **Required in production** (503 if unset) |
+| `CONSENT_WRITE_SECRET` | Shared secret for `POST /api/compliance/consent` (`X-Consent-Write-Secret`) | **Required in production** (503 if unset) |
 | `PLATFORM_COOKIE_SAMESITE` | Cookie SameSite for platform flows | |
 | `DISABLE_CSRF` | `1` skips CSRF middleware | |
 | `CSP_EMBED_FRAME_ANCESTORS` | CSP `frame-ancestors` for embed | |

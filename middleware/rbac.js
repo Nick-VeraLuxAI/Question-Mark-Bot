@@ -2,6 +2,15 @@ function normalizeRole(role) {
   return String(role || "viewer").toLowerCase();
 }
 
+/**
+ * Tenant membership roles use the same capability matrix as platform roles for
+ * config/stats/funnel, but never receive cross-tenant provisioning rights.
+ */
+function hasClientTenantPermission(role, permission) {
+  if (permission === "tenants:provision") return false;
+  return hasPermission(role, permission);
+}
+
 function hasPermission(role, permission) {
   const r = normalizeRole(role);
   if (r === "owner" || r === "admin") return true;
@@ -47,6 +56,14 @@ function resolveRole(req) {
   return normalizeRole(platformRole || "viewer");
 }
 
+/** After tenant-scoped membership middleware, prefer effective tenant role for admin UX. */
+function resolveTenantScopedRole(req) {
+  if (req.effectiveTenantRole != null && String(req.effectiveTenantRole).trim() !== "") {
+    return normalizeRole(req.effectiveTenantRole);
+  }
+  return resolveRole(req);
+}
+
 function requirePermission(permission) {
   return (req, res, next) => {
     const role = resolveRole(req);
@@ -58,4 +75,10 @@ function requirePermission(permission) {
   };
 }
 
-module.exports = { requirePermission, hasPermission, resolveRole };
+module.exports = {
+  requirePermission,
+  hasPermission,
+  hasClientTenantPermission,
+  resolveRole,
+  resolveTenantScopedRole,
+};

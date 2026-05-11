@@ -57,6 +57,12 @@ services:
       PUBLIC_PRODUCT_LABEL: ${PUBLIC_PRODUCT_LABEL:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://127.0.0.1:8080,http://localhost:8080,http://127.0.0.1:8081,http://localhost:8081,http://127.0.0.1:8082,http://localhost:8082}
       DEFAULT_TENANT: ${DEFAULT_TENANT:-default}
+      # Multi-tenant guardrails — set in .env (see .env.example). Empty CHANNEL_/CONSENT_ secrets → those POST routes return 503 in production.
+      CHANNEL_EVENTS_SECRET: ${CHANNEL_EVENTS_SECRET:-}
+      CONSENT_WRITE_SECRET: ${CONSENT_WRITE_SECRET:-}
+      STRICT_TENANT_BINDING: ${STRICT_TENANT_BINDING:-}
+      ALLOW_PUBLIC_DEFAULT_TENANT_FALLBACK: ${ALLOW_PUBLIC_DEFAULT_TENANT_FALLBACK:-}
+      PLATFORM_URL: ${PLATFORM_URL:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -91,6 +97,11 @@ services:
       PUBLIC_PRODUCT_LABEL: ${PUBLIC_PRODUCT_LABEL:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://127.0.0.1:8080,http://localhost:8080,http://127.0.0.1:8081,http://localhost:8081,http://127.0.0.1:8082,http://localhost:8082}
       DEFAULT_TENANT: ${DEFAULT_TENANT:-default}
+      CHANNEL_EVENTS_SECRET: ${CHANNEL_EVENTS_SECRET:-}
+      CONSENT_WRITE_SECRET: ${CONSENT_WRITE_SECRET:-}
+      STRICT_TENANT_BINDING: ${STRICT_TENANT_BINDING:-}
+      ALLOW_PUBLIC_DEFAULT_TENANT_FALLBACK: ${ALLOW_PUBLIC_DEFAULT_TENANT_FALLBACK:-}
+      PLATFORM_URL: ${PLATFORM_URL:-}
     depends_on:
       postgres:
         condition: service_healthy

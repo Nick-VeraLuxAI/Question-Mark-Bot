@@ -2,7 +2,7 @@
 const express = require('express');
 const fsp = require("fs").promises;
 const path = require('path');
-const { randomUUID, randomBytes, createHash } = require('crypto');
+const { randomUUID, randomBytes, createHash, timingSafeEqual } = require('crypto');
 const OpenAI = require('openai');
 const { google } = require('googleapis');
 const cookieParser = require('cookie-parser');
@@ -13,7 +13,9 @@ require('dotenv').config({ path: path.join(__dirname, '.env') });
 const { encrypt, hasKey } = require('./utils/kms');
 const { materializeTenantSecrets } = require("./utils/tenantSecrets");
 const { platformSSOMiddleware } = require('./middleware/platformSSO');
-const { requirePermission } = require("./middleware/rbac");
+const { requirePermission, resolveRole, resolveTenantScopedRole, hasPermission } = require("./middleware/rbac");
+const { createClientPortalMiddleware } = require("./middleware/clientPortal");
+const { attachClientPortalRoutes } = require("./routes/clientPortalApi");
 const { applyGuardrails } = require("./utils/guardrails");
 const { writeAudit } = require("./utils/audit");
 const { createDistributedRateLimiter } = require("./utils/rateLimit");
@@ -22,6 +24,19 @@ const { retrieveContext } = require("./services/rag");
 const { evaluateMetricAlerts } = require("./services/alerts");
 const { chooseModel, enforceMonthlyCap } = require("./utils/modelPolicy");
 const { loadPromptBundle } = require("./utils/promptManager");
+const {
+  getBehaviorForGet,
+  mergeBehaviorIncoming,
+  validateAndNormalizeBehaviorPatch,
+  buildBehaviorInstruction,
+} = require("./utils/botBehavior");
+const {
+  getBusinessProfileForGet,
+  mergeBusinessProfileIncoming,
+  validateAndNormalizeBusinessProfilePatch,
+  buildBusinessProfileInstruction,
+} = require("./utils/businessProfile");
+const { computePilotReadiness } = require("./utils/pilotReadiness");
 const { scoreLead } = require("./utils/leadScoring");
 const { enqueue, closeAllQueues } = require("./utils/jobQueue");
 const { quitRedisClients, pingRedisForReadiness } = require("./utils/redis");
@@ -36,6 +51,8 @@ const {
   EventType,
   SCHEMA_VERSION: INTEGRATION_SCHEMA_VERSION,
   listEventTypes,
+  buildEnvelope,
+  webhookSubscribesToEvent,
 } = require("./integrations/domain");
 const { emitIntegrationEvent } = require("./services/outboundEvents");
 const { enqueueLeadNotificationEmail } = require("./services/leadEmailQueue");
@@ -52,6 +69,45 @@ const PROMPTS_DIR = process.env.PROMPTS_DIR || "prompts/tenants";
 const DEFAULT_TENANT = (process.env.DEFAULT_TENANT || "default").toLowerCase();
 const HOT = process.env.HOT_RELOAD_PROMPTS === "1";
 const cache = new Map(); // key=abs path -> contents
+
+/** Production: unknown slug must not map to default tenant unless explicitly allowed. Dev/test: defaults on. */
+function allowPublicDefaultTenantFallback() {
+  if (process.env.NODE_ENV !== "production") return true;
+  return String(process.env.ALLOW_PUBLIC_DEFAULT_TENANT_FALLBACK || "").trim() === "1";
+}
+
+/** Compare header value to env secret without leaking length via timingSafeEqual on SHA-256 digests. */
+function secretHeaderMatches(headerVal, envSecret) {
+  const h = String(headerVal || "").trim();
+  const s = String(envSecret || "").trim();
+  if (!s) return false;
+  const hh = createHash("sha256").update(h, "utf8").digest();
+  const sh = createHash("sha256").update(s, "utf8").digest();
+  return timingSafeEqual(hh, sh);
+}
+
+/**
+ * Shared-secret gate for server-to-server style public routes.
+ * - Production without configured secret → 503 (fail closed).
+ * - Secret configured → require matching header (401 on miss).
+ * - Non-production without secret → allow (local dev); optional ALLOW_UNAUTH_*=1 is redundant but documented.
+ */
+function requireEnvSecretOrFailClosed({ req, res, envName, headerName, notConfiguredError, invalidError }) {
+  const isProd = process.env.NODE_ENV === "production";
+  const secret = String(process.env[envName] || "").trim();
+  if (isProd && !secret) {
+    res.status(503).json({ error: notConfiguredError });
+    return false;
+  }
+  if (secret) {
+    const hdr = req.headers[headerName] ?? req.headers[String(headerName).toLowerCase()];
+    if (!secretHeaderMatches(hdr, secret)) {
+      res.status(401).json({ error: invalidError });
+      return false;
+    }
+  }
+  return true;
+}
 
 /** Non-secret deployment hints for admin APIs and readiness (operator UX). */
 function getAdminServerHints() {
@@ -210,30 +266,65 @@ app.use(cors({
   },
   credentials: true,
   methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Tenant", "X-CSRF-Token", "X-Request-Id"],
+  allowedHeaders: [
+    "Content-Type",
+    "Authorization",
+    "X-Tenant",
+    "X-CSRF-Token",
+    "X-Request-Id",
+    "X-Channel-Events-Secret",
+    "X-Consent-Write-Secret",
+  ],
   maxAge: 600,
 }));
-app.use(express.json({ limit: '16kb' }));
+/** Default JSON cap; knowledge mutators need a larger body (see selector below). */
+const jsonBodyDefault = express.json({ limit: "16kb" });
+const jsonBodyAdminKnowledge = express.json({ limit: "1mb" });
+function jsonBodySelector(req, res, next) {
+  const p = req.path || "";
+  if (
+    (req.method === "POST" &&
+      (p === "/api/admin/knowledge" ||
+        p === "/api/admin/knowledge/" ||
+        p === "/api/client/knowledge" ||
+        p === "/api/client/knowledge/")) ||
+    (req.method === "PATCH" && /^\/api\/(admin|client)\/knowledge\/[^/]+$/.test(p))
+  ) {
+    return jsonBodyAdminKnowledge(req, res, next);
+  }
+  return jsonBodyDefault(req, res, next);
+}
+app.use(jsonBodySelector);
 app.use(cookieParser());
 app.use(requestCorrelationMiddleware);
 
-async function serveAdminPage(_req, res, next) {
-  try {
-    const nonce = randomBytes(16).toString("base64url");
-    let tpl = await fsp.readFile(path.join(__dirname, "templates", "admin.html"), "utf8");
-    const hideDev =
-      process.env.NODE_ENV === "production" && process.env.ALLOW_ADMIN_BEARER_DEV_TOOLS !== "1";
-    const devAttrs = hideDev ? 'hidden style="display:none !important" aria-hidden="true"' : "";
-    tpl = tpl.replace(/__DEV_SECTION_ATTRS__/g, devAttrs);
-    res.setHeader("Content-Security-Policy", buildAdminPageCsp(nonce));
-    res.type("html").send(tpl.replace(/__CSP_NONCE__/g, nonce));
-  } catch (e) {
-    next(e);
-  }
+function createServeAdminPage(portalMode) {
+  return async function serveAdminPage(_req, res, next) {
+    try {
+      const nonce = randomBytes(16).toString("base64url");
+      let tpl = await fsp.readFile(path.join(__dirname, "templates", "admin.html"), "utf8");
+      const hideDev =
+        process.env.NODE_ENV === "production" && process.env.ALLOW_ADMIN_BEARER_DEV_TOOLS !== "1";
+      const devAttrs = hideDev ? 'hidden style="display:none !important" aria-hidden="true"' : "";
+      tpl = tpl.replace(/__DEV_SECTION_ATTRS__/g, devAttrs);
+      const portalClass =
+        portalMode === "client" ? "admin-simple admin-portal-client" : "admin-simple admin-portal-operator";
+      tpl = tpl.replace(/__PORTAL_BODY_CLASS__/g, portalClass);
+      tpl = tpl.replace(/__PORTAL_DATA__/g, portalMode);
+      res.setHeader("Content-Security-Policy", buildAdminPageCsp(nonce));
+      res.type("html").send(tpl.replace(/__CSP_NONCE__/g, nonce));
+    } catch (e) {
+      next(e);
+    }
+  };
 }
-// Browsers / links often use trailing slash; only "/admin" matched before, so "/admin/" 404'd.
-app.get("/admin", serveAdminPage);
-app.get("/admin/", serveAdminPage);
+// Operator (internal) vs client dashboards — same SPA, different portal mode and API prefixes.
+app.get("/admin", createServeAdminPage("operator"));
+app.get("/admin/", createServeAdminPage("operator"));
+app.get("/admin/operator", createServeAdminPage("operator"));
+app.get("/admin/operator/", createServeAdminPage("operator"));
+app.get("/admin/client", createServeAdminPage("client"));
+app.get("/admin/client/", createServeAdminPage("client"));
 
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -342,7 +433,7 @@ app.use(async (req, res, next) => {
       select: tenantSelect
     });
 
-    if (!tenantRow && tenantSlug !== DEFAULT_TENANT) {
+    if (!tenantRow && allowPublicDefaultTenantFallback() && tenantSlug !== DEFAULT_TENANT) {
       tenantRow = await prisma.tenant.findFirst({
         where: { OR: [{ subdomain: DEFAULT_TENANT }, { id: DEFAULT_TENANT }] },
         select: tenantSelect
@@ -431,9 +522,31 @@ const requireTenantApiKey = createRequireTenantApiKey({
   resolveTenantSlug,
 });
 
+const {
+  loadClientTenant,
+  assertTenantAccess,
+  requireClientPermission,
+  platformOperatorCapable,
+  normalizeRole: normalizeMembershipRole,
+  assertOperatorTenantPermission,
+} = createClientPortalMiddleware({ prisma, materializeTenantSecrets, resolveTenantSlug });
+
 function requirePlatformAuth(req, res, next) {
   if (!req.platformUser) {
     return res.status(401).json({ error: 'Platform authentication required' });
+  }
+  next();
+}
+
+/** Tenant provisioning / global control-plane: platform owner or admin only. */
+function requireTenantProvisioningPlatformRole(req, res, next) {
+  const r = normalizeMembershipRole(req.platformUser?.role);
+  if (r !== "owner" && r !== "admin") {
+    return res.status(403).json({
+      error: "forbidden",
+      code: "tenant_provisioning_requires_platform_owner_admin",
+      message: "Tenant provisioning is restricted to platform owner or admin accounts.",
+    });
   }
   next();
 }
@@ -680,10 +793,14 @@ app.post('/message', messageLimiter, async (req, res) => {
       return res.status(402).json({ reply: "This tenant has reached the monthly AI budget cap." });
     }
 
+    const businessProfileInstruction = buildBusinessProfileInstruction(req.tenant);
+    const behaviorInstruction = buildBehaviorInstruction(req.tenant);
     const messages = [
       { role: "system", content: systemPrompt },
       ...(policy ? [{ role: "system", content: `Tenant Policy (${tenant?.name || tenantId}):\n${policy}` }] : []),
       ...(voice  ? [{ role: "system", content: `Voice & Style Guide (${tenant?.name || tenantId}):\n${voice}` }] : []),
+      ...(businessProfileInstruction ? [{ role: "system", content: businessProfileInstruction }] : []),
+      ...(behaviorInstruction ? [{ role: "system", content: behaviorInstruction }] : []),
       ...(memory.summary ? [{ role: "system", content: `Conversation Summary:\n${memory.summary}` }] : []),
       ...memory.messages.slice(-8),
       ...(ragSnippets.length
@@ -768,7 +885,13 @@ function getOAuthClient(tenant) {
 }
 
 // --- Begin per-tenant Google OAuth routes ---
-app.get('/auth', authLimiter, requirePlatformAuth, requirePermission("config:read"), loadTenant, async (req, res) => {
+app.get(
+  "/auth",
+  authLimiter,
+  requirePlatformAuth,
+  loadTenant,
+  assertOperatorTenantPermission("config:write"),
+  async (req, res) => {
   try {
     const { tenant } = req; // now defined
     const oauth2Client = getOAuthClient(tenant);
@@ -779,6 +902,13 @@ app.get('/auth', authLimiter, requirePlatformAuth, requirePermission("config:rea
       sameSite: 'Lax',
       maxAge: 10 * 60 * 1000,
       path: '/',
+    });
+    res.cookie("oauth_tenant", String(req.tenantId || ""), {
+      httpOnly: true,
+      secure: COOKIE_SECURE,
+      sameSite: "Lax",
+      maxAge: 10 * 60 * 1000,
+      path: "/",
     });
     const authUrl = oauth2Client.generateAuthUrl({
       access_type: 'offline',
@@ -799,19 +929,35 @@ app.get('/auth', authLimiter, requirePlatformAuth, requirePermission("config:rea
   }
 });
 
-app.get('/api/oauth2callback', authLimiter, requirePlatformAuth, requirePermission("config:read"), loadTenant, async (req, res) => {
+app.get(
+  "/api/oauth2callback",
+  authLimiter,
+  requirePlatformAuth,
+  loadTenant,
+  assertOperatorTenantPermission("config:write"),
+  async (req, res) => {
   try {
     const code = req.query.code;
     const state = String(req.query.state || '');
     const stateCookie = String(req.cookies?.oauth_state || '');
+    const tenantCookie = String(req.cookies?.oauth_tenant || "");
     if (!state || !stateCookie || state !== stateCookie) {
       return res.status(401).send("OAuth state verification failed");
+    }
+    if (!tenantCookie || tenantCookie !== String(req.tenantId || "")) {
+      return res.status(403).send("OAuth tenant binding mismatch");
     }
     res.clearCookie('oauth_state', {
       httpOnly: true,
       secure: COOKIE_SECURE,
       sameSite: 'Lax',
       path: '/',
+    });
+    res.clearCookie("oauth_tenant", {
+      httpOnly: true,
+      secure: COOKIE_SECURE,
+      sameSite: "Lax",
+      path: "/",
     });
 
     const { tenant, tenantId } = req; // now defined
@@ -850,6 +996,65 @@ app.get(
   (req, res) => issueCsrfToken(req, res)
 );
 
+/** Safe session snapshot for operator admin UI (no tokens or secrets). */
+app.get("/api/admin/me", requirePlatformAuth, async (req, res) => {
+  try {
+    const u = req.platformUser || {};
+    const t = req.platformTenant || {};
+    const userId = u.id != null ? String(u.id) : "";
+    const platformRole = normalizeMembershipRole(u.role);
+    const canUseOperatorPortal =
+      Boolean(platformOperatorCapable(platformRole)) || hasPermission(platformRole, "tenants:provision");
+
+    const memberships = await prisma.tenantMembership.findMany({
+      where: { userId, status: "active" },
+      include: { tenant: { select: { id: true, name: true, subdomain: true } } },
+      orderBy: { createdAt: "asc" },
+    });
+
+    const allowedTenants = memberships.map((m) => ({
+      slug: m.tenant.subdomain || m.tenant.id,
+      displayName: m.tenant.name,
+      role: m.role,
+      status: m.status,
+    }));
+
+    let currentTenant = null;
+    let membership = null;
+    if (memberships.length === 1) {
+      const m = memberships[0];
+      currentTenant = {
+        slug: m.tenant.subdomain || m.tenant.id,
+        displayName: m.tenant.name,
+        status: m.status,
+      };
+      membership = { role: m.role, status: m.status };
+    }
+
+    res.json({
+      signedIn: true,
+      id: userId || null,
+      email: u.email != null ? String(u.email) : null,
+      role: platformRole,
+      platformTenantSlug: t.slug != null ? String(t.slug) : null,
+      platformTenantName: t.name != null ? String(t.name) : null,
+      user: {
+        id: userId || null,
+        email: u.email != null ? String(u.email) : null,
+        platformRole,
+      },
+      portalMode: "operator",
+      currentTenant,
+      membership,
+      allowedTenants,
+      canUseOperatorPortal,
+    });
+  } catch (e) {
+    console.error("admin me", e);
+    res.status(500).json({ error: "admin_me_failed" });
+  }
+});
+
 // Health check (used by platform to verify Solomon is reachable)
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', product: 'solomon', version: '1.0.0' });
@@ -857,7 +1062,7 @@ app.get('/api/health', (_req, res) => {
 
 app.get('/api/ready', async (_req, res) => {
   const strict = process.env.NODE_ENV === 'production';
-  const checks = { database: 'unknown', redis: 'unknown', defaultTenant: 'unknown' };
+  const checks = { database: 'unknown', redis: 'unknown', defaultTenant: 'unknown', strictTenantBinding: 'unknown' };
 
   try {
     await Promise.race([
@@ -884,6 +1089,25 @@ app.get('/api/ready', async (_req, res) => {
     }
     checks.redis = 'ok';
 
+    const platformUrlConfigured = Boolean(String(process.env.PLATFORM_URL || "").trim());
+    if (platformUrlConfigured && process.env.STRICT_TENANT_BINDING !== "1") {
+      checks.strictTenantBinding = "missing";
+      return res.status(503).json({
+        status: "not_ready",
+        reason: "strict_tenant_binding_required",
+        checks,
+        hints: [
+          {
+            code: "strict_tenant_binding",
+            severity: "error",
+            message:
+              "PLATFORM_URL is set but STRICT_TENANT_BINDING is not 1. Set STRICT_TENANT_BINDING=1 for shared-admin or multi-client deployments.",
+          },
+        ],
+      });
+    }
+    checks.strictTenantBinding = platformUrlConfigured ? "ok" : "skipped_no_platform_url";
+
     const slug = (process.env.DEFAULT_TENANT || 'default').toLowerCase();
     const tenantRow = await prisma.tenant.findFirst({
       where: { OR: [{ id: slug }, { subdomain: slug }] },
@@ -901,6 +1125,9 @@ app.get('/api/ready', async (_req, res) => {
   } else {
     checks.redis = 'skipped_non_production';
     checks.defaultTenant = 'skipped_non_production';
+    const platformUrlConfigured = Boolean(String(process.env.PLATFORM_URL || "").trim());
+    checks.strictTenantBinding =
+      platformUrlConfigured && process.env.STRICT_TENANT_BINDING !== "1" ? "recommended" : "skipped_non_production";
   }
 
   /** Operator hints: app can be "ready" while some tenants lack chat keys. */
@@ -926,6 +1153,15 @@ app.get('/api/ready', async (_req, res) => {
     console.warn("readiness hints query skipped:", e.message);
   }
 
+  if (!strict && checks.strictTenantBinding === "recommended") {
+    hints.push({
+      code: "strict_tenant_binding",
+      severity: "warn",
+      message:
+        "PLATFORM_URL is set but STRICT_TENANT_BINDING is not 1. Use STRICT_TENANT_BINDING=1 in production for shared-admin or multi-client deployments.",
+    });
+  }
+
   res.json({
     status: 'ready',
     product: 'solomon',
@@ -941,13 +1177,16 @@ app.get("/api/public/embed-config", publicEmbedLimiter, async (req, res) => {
     const slug = resolveTenantSlug(req);
     let tenant = await prisma.tenant.findFirst({
       where: { OR: [{ subdomain: slug }, { id: slug }] },
-      select: { id: true, name: true, settings: true },
+      select: { id: true, name: true, subdomain: true, settings: true },
     });
-    if (!tenant && slug !== DEFAULT_TENANT) {
+    if (!tenant && allowPublicDefaultTenantFallback() && slug !== DEFAULT_TENANT) {
       tenant = await prisma.tenant.findFirst({
         where: { OR: [{ subdomain: DEFAULT_TENANT }, { id: DEFAULT_TENANT }] },
-        select: { id: true, name: true, settings: true },
+        select: { id: true, name: true, subdomain: true, settings: true },
       });
+    }
+    if (!tenant) {
+      return res.status(404).json({ error: "tenant_not_found", tenant: slug });
     }
     const settings =
       tenant?.settings && typeof tenant.settings === "object" ? tenant.settings : {};
@@ -959,8 +1198,9 @@ app.get("/api/public/embed-config", publicEmbedLimiter, async (req, res) => {
       tenant,
     });
     res.set("Cache-Control", "public, max-age=60");
+    const tenantSlugPublic = tenant.subdomain || tenant.id || "";
     res.json({
-      tenantId: tenant?.id ?? null,
+      tenantSlug: tenantSlugPublic,
       theme,
       ...copy,
     });
@@ -971,7 +1211,7 @@ app.get("/api/public/embed-config", publicEmbedLimiter, async (req, res) => {
 });
 
 // GET /api/config — tenant config for portal (requires platform SSO)
-app.get('/api/config', requirePlatformAuth, requirePermission("config:read"), loadTenant, async (req, res) => {
+app.get('/api/config', requirePlatformAuth, loadTenant, assertOperatorTenantPermission("config:read"), async (req, res) => {
   if (!req.platformUser) {
     return res.status(401).json({ error: 'Platform authentication required' });
   }
@@ -1003,7 +1243,7 @@ app.get('/api/config', requirePlatformAuth, requirePermission("config:read"), lo
 });
 
 // GET /api/stats — aggregate stats for portal dashboard (requires platform SSO)
-app.get('/api/stats', requirePlatformAuth, requirePermission("stats:read"), loadTenant, async (req, res) => {
+app.get('/api/stats', requirePlatformAuth, loadTenant, assertOperatorTenantPermission("stats:read"), async (req, res) => {
   const tenantId = req.tenantId;
   try {
     const [conversations, leads, messages, recentUsage] = await Promise.all([
@@ -1045,43 +1285,898 @@ app.get('/api/stats', requirePlatformAuth, requirePermission("stats:read"), load
   }
 });
 
-app.post('/api/keys/rotate', authLimiter, requirePlatformAuth, requirePermission("config:write"), loadTenant, async (req, res) => {
-  const tenantId = req.tenantId;
-  try {
-    const clearKey = `qmb_${randomBytes(24).toString("hex")}`;
-    const hash = createHash("sha256").update(clearKey).digest("hex");
-    await prisma.tenant.update({
-      where: { id: tenantId },
-      data: {
-        apiKeyHash: hash,
-        apiKeyLast4: clearKey.slice(-4),
-        apiKeyRotatedAt: new Date(),
-      },
-    });
-    await writeAudit(prisma, req, {
-      action: "apikey.rotate",
-      resource: "tenant_apikey",
-      outcome: "ok",
-      details: { tenantId },
-    });
-    res.json({ apiKey: clearKey, rotatedAt: new Date().toISOString() });
-  } catch (err) {
-    console.error("API key rotate failed", err);
-    await writeAudit(prisma, req, {
-      action: "apikey.rotate",
-      resource: "tenant_apikey",
-      outcome: "error",
-      details: { message: err.message, tenantId },
-    });
-    res.status(500).json({ error: "api_key_rotate_failed" });
+/** Admin list pagination: limit 1–100, offset ≥ 0 */
+function parseAdminListPagination(req) {
+  const lim = parseInt(String(req.query.limit ?? "25"), 10);
+  const off = parseInt(String(req.query.offset ?? "0"), 10);
+  const limit = Number.isFinite(lim) ? Math.min(100, Math.max(1, lim)) : 25;
+  const offset = Number.isFinite(off) && off >= 0 ? off : 0;
+  return { limit, offset };
+}
+
+function parseOptionalIsoDate(value) {
+  if (value == null || value === "") return null;
+  const s = String(value).trim();
+  if (!s) return null;
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function adminSearchText(req) {
+  const q = String(req.query.q ?? "").trim();
+  return q.slice(0, 200);
+}
+
+/** Keyword RAG chunks: size cap keeps rows reasonable without an embedding pipeline. */
+const KNOWLEDGE_CHUNK_MAX = 2500;
+const ADMIN_KNOWLEDGE_MAX_TITLE = 500;
+const ADMIN_KNOWLEDGE_MAX_SOURCE = 2000;
+const ADMIN_KNOWLEDGE_MAX_CONTENT = 100000;
+
+function splitKnowledgeContent(raw) {
+  const text = String(raw || "");
+  if (!text.length) return [""];
+  const parts = [];
+  for (let i = 0; i < text.length; i += KNOWLEDGE_CHUNK_MAX) {
+    parts.push(text.slice(i, i + KNOWLEDGE_CHUNK_MAX));
   }
-});
+  return parts;
+}
+
+/**
+ * Tenant-scoped knowledge list for admin UI.
+ * Read: config:read — same family as /api/config and branding reads (operational visibility).
+ */
+app.get(
+  "/api/admin/knowledge",
+  requirePlatformAuth,
+  loadTenant,
+  assertOperatorTenantPermission("config:read"),
+  async (req, res) => {
+    const tenantId = req.tenantId;
+    const { limit, offset } = parseAdminListPagination(req);
+    const q = adminSearchText(req);
+
+    const where = {
+      tenantId,
+      ...(q
+        ? {
+            OR: [
+              { title: { contains: q, mode: "insensitive" } },
+              { content: { contains: q, mode: "insensitive" } },
+              { sourceUrl: { contains: q, mode: "insensitive" } },
+            ],
+          }
+        : {}),
+    };
+
+    try {
+      const [total, rows] = await Promise.all([
+        prisma.knowledgeDocument.count({ where }),
+        prisma.knowledgeDocument.findMany({
+          where,
+          orderBy: { updatedAt: "desc" },
+          skip: offset,
+          take: limit,
+          select: {
+            id: true,
+            title: true,
+            sourceUrl: true,
+            status: true,
+            createdAt: true,
+            updatedAt: true,
+            _count: { select: { chunks: true } },
+            chunks: {
+              orderBy: { idx: "asc" },
+              take: 1,
+              select: { content: true },
+            },
+          },
+        }),
+      ]);
+
+      const items = rows.map((row) => {
+        const first = row.chunks[0]?.content || "";
+        const preview = first.slice(0, 220);
+        return {
+          id: row.id,
+          title: row.title,
+          source: row.sourceUrl || "",
+          status: row.status,
+          chunkCount: row._count.chunks,
+          createdAt: row.createdAt,
+          updatedAt: row.updatedAt,
+          preview: preview + (first.length > 220 ? "…" : ""),
+        };
+      });
+
+      await writeAudit(prisma, req, {
+        action: "admin.knowledge.list",
+        resource: "knowledge_document",
+        outcome: "ok",
+        details: { tenantId, limit, offset, qLen: q.length },
+      });
+
+      res.json({ items, total, limit, offset });
+    } catch (err) {
+      console.error("admin knowledge list", err);
+      res.status(500).json({ error: "knowledge_list_failed" });
+    }
+  }
+);
+
+/**
+ * Single knowledge document with chunks (read-only for operators).
+ * config:read — see list route.
+ */
+app.get(
+  "/api/admin/knowledge/:id",
+  requirePlatformAuth,
+  loadTenant,
+  assertOperatorTenantPermission("config:read"),
+  async (req, res) => {
+    const tenantId = req.tenantId;
+    const id = String(req.params.id || "").trim();
+    if (!id) return res.status(400).json({ error: "id_required" });
+
+    try {
+      const doc = await prisma.knowledgeDocument.findFirst({
+        where: { id, tenantId },
+        select: {
+          id: true,
+          title: true,
+          sourceUrl: true,
+          status: true,
+          content: true,
+          createdAt: true,
+          updatedAt: true,
+          chunks: {
+            orderBy: { idx: "asc" },
+            select: { id: true, content: true, createdAt: true },
+          },
+        },
+      });
+      if (!doc) return res.status(404).json({ error: "not_found" });
+
+      await writeAudit(prisma, req, {
+        action: "admin.knowledge.read",
+        resource: "knowledge_document",
+        resourceId: id,
+        outcome: "ok",
+        details: { tenantId, chunkCount: doc.chunks.length },
+      });
+
+      res.json({
+        id: doc.id,
+        title: doc.title,
+        source: doc.sourceUrl || "",
+        status: doc.status,
+        createdAt: doc.createdAt,
+        updatedAt: doc.updatedAt,
+        content: doc.content,
+        chunks: doc.chunks,
+      });
+    } catch (err) {
+      console.error("admin knowledge read", err);
+      res.status(500).json({ error: "knowledge_read_failed" });
+    }
+  }
+);
+
+/**
+ * Run keyword overlap retrieval (same helper as chat RAG) without calling OpenAI.
+ * config:read — low-risk diagnostic for operators.
+ */
+app.get(
+  "/api/admin/knowledge-retrieval",
+  requirePlatformAuth,
+  loadTenant,
+  assertOperatorTenantPermission("config:read"),
+  async (req, res) => {
+    const tenantId = req.tenantId;
+    const q = String(req.query.q ?? "").trim().slice(0, 500);
+    if (!q) return res.status(400).json({ error: "q_required" });
+    try {
+      const matches = await retrieveContext(prisma, tenantId, q, 8);
+      res.json({
+        query: q,
+        matches: matches.map((m) => ({
+          documentTitle: m.documentTitle,
+          source: m.sourceUrl || "",
+          excerpt: (m.content || "").slice(0, 900),
+        })),
+      });
+    } catch (err) {
+      console.error("admin knowledge retrieval", err);
+      res.status(500).json({ error: "knowledge_retrieval_failed" });
+    }
+  }
+);
+
+/**
+ * Create a KnowledgeDocument and keyword-RAG chunks (no embeddings).
+ * Write: config:write — same as branding and integration keys (tenant configuration).
+ */
+app.post(
+  "/api/admin/knowledge",
+  authLimiter,
+  requirePlatformAuth,
+  loadTenant,
+  assertOperatorTenantPermission("config:write"),
+  async (req, res) => {
+    const tenantId = req.tenantId;
+    const body = req.body || {};
+    const title = String(body.title ?? "").trim();
+    const content = String(body.content ?? "");
+    const source = body.source != null ? String(body.source).trim() : "";
+
+    if (!title) return res.status(400).json({ error: "title_required" });
+    if (!content.trim()) return res.status(400).json({ error: "content_required" });
+    if (title.length > ADMIN_KNOWLEDGE_MAX_TITLE) {
+      return res.status(400).json({ error: "title_too_long", max: ADMIN_KNOWLEDGE_MAX_TITLE });
+    }
+    if (source.length > ADMIN_KNOWLEDGE_MAX_SOURCE) {
+      return res.status(400).json({ error: "source_too_long", max: ADMIN_KNOWLEDGE_MAX_SOURCE });
+    }
+    if (content.length > ADMIN_KNOWLEDGE_MAX_CONTENT) {
+      return res.status(400).json({ error: "content_too_long", max: ADMIN_KNOWLEDGE_MAX_CONTENT });
+    }
+
+    const parts = splitKnowledgeContent(content);
+
+    try {
+      const created = await prisma.$transaction(async (tx) => {
+        const doc = await tx.knowledgeDocument.create({
+          data: {
+            tenantId,
+            title,
+            sourceUrl: source || null,
+            content,
+            status: "active",
+          },
+        });
+        await tx.knowledgeChunk.createMany({
+          data: parts.map((c, idx) => ({
+            tenantId,
+            documentId: doc.id,
+            idx,
+            content: c,
+          })),
+        });
+        return doc;
+      });
+
+      await writeAudit(prisma, req, {
+        action: "admin.knowledge.create",
+        resource: "knowledge_document",
+        resourceId: created.id,
+        outcome: "ok",
+        details: { tenantId, titleLen: title.length, chunkCount: parts.length },
+      });
+
+      res.status(201).json({
+        id: created.id,
+        title: created.title,
+        source: created.sourceUrl || "",
+        status: created.status,
+        chunkCount: parts.length,
+        createdAt: created.createdAt,
+        updatedAt: created.updatedAt,
+        preview: (parts[0] || "").slice(0, 220) + ((parts[0] || "").length > 220 ? "…" : ""),
+      });
+    } catch (err) {
+      console.error("admin knowledge create", err);
+      res.status(500).json({ error: "knowledge_create_failed" });
+    }
+  }
+);
+
+/**
+ * Soft-archive or reactivate a document (affects RAG via document.status).
+ * config:write — state change on tenant-managed knowledge.
+ */
+app.patch(
+  "/api/admin/knowledge/:id",
+  authLimiter,
+  requirePlatformAuth,
+  loadTenant,
+  assertOperatorTenantPermission("config:write"),
+  async (req, res) => {
+    const tenantId = req.tenantId;
+    const id = String(req.params.id || "").trim();
+    const body = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
+    const nextStatus = String(body.status ?? "").trim().toLowerCase();
+    if (!id) return res.status(400).json({ error: "id_required" });
+    if (!["active", "archived"].includes(nextStatus)) {
+      return res.status(400).json({ error: "invalid_status", allowed: ["active", "archived"] });
+    }
+
+    try {
+      const existing = await prisma.knowledgeDocument.findFirst({
+        where: { id, tenantId },
+        select: { id: true, status: true },
+      });
+      if (!existing) return res.status(404).json({ error: "not_found" });
+
+      const upd = await prisma.knowledgeDocument.updateMany({
+        where: { id, tenantId },
+        data: { status: nextStatus },
+      });
+      if (upd.count === 0) return res.status(404).json({ error: "not_found" });
+
+      const updated = await prisma.knowledgeDocument.findFirst({
+        where: { id, tenantId },
+        select: {
+          id: true,
+          title: true,
+          sourceUrl: true,
+          status: true,
+          updatedAt: true,
+          _count: { select: { chunks: true } },
+        },
+      });
+      if (!updated) return res.status(404).json({ error: "not_found" });
+
+      await writeAudit(prisma, req, {
+        action: "admin.knowledge.patch",
+        resource: "knowledge_document",
+        resourceId: id,
+        outcome: "ok",
+        details: { tenantId, status: nextStatus },
+      });
+
+      res.json({
+        id: updated.id,
+        title: updated.title,
+        source: updated.sourceUrl || "",
+        status: updated.status,
+        chunkCount: updated._count.chunks,
+        updatedAt: updated.updatedAt,
+      });
+    } catch (err) {
+      console.error("admin knowledge patch", err);
+      res.status(500).json({ error: "knowledge_patch_failed" });
+    }
+  }
+);
+
+/**
+ * Hard-delete a document and cascaded chunks (tenant-scoped).
+ * config:write — destructive; client should confirm.
+ */
+app.delete(
+  "/api/admin/knowledge/:id",
+  authLimiter,
+  requirePlatformAuth,
+  loadTenant,
+  assertOperatorTenantPermission("config:write"),
+  async (req, res) => {
+    const tenantId = req.tenantId;
+    const id = String(req.params.id || "").trim();
+    if (!id) return res.status(400).json({ error: "id_required" });
+
+    try {
+      /** Explicit chunk removal first (defense in depth; schema also has onDelete: Cascade). */
+      const deleted = await prisma.$transaction(async (tx) => {
+        const chunkDel = await tx.knowledgeChunk.deleteMany({
+          where: { documentId: id, tenantId },
+        });
+        const docDel = await tx.knowledgeDocument.deleteMany({
+          where: { id, tenantId },
+        });
+        return { docDel: docDel.count, chunkDel: chunkDel.count };
+      });
+      if (deleted.docDel === 0) return res.status(404).json({ error: "not_found" });
+
+      await writeAudit(prisma, req, {
+        action: "admin.knowledge.delete",
+        resource: "knowledge_document",
+        resourceId: id,
+        outcome: "ok",
+        details: { tenantId, chunksRemoved: deleted.chunkDel },
+      });
+
+      res.status(204).send();
+    } catch (err) {
+      console.error("admin knowledge delete", err);
+      res.status(500).json({ error: "knowledge_delete_failed" });
+    }
+  }
+);
+
+/**
+ * Guided bot behavior (Tenant.settings.behavior). Read: config:read.
+ */
+app.get(
+  "/api/admin/bot-behavior",
+  requirePlatformAuth,
+  loadTenant,
+  assertOperatorTenantPermission("config:read"),
+  async (req, res) => {
+    try {
+      const settings = req.tenant?.settings;
+      const payload = getBehaviorForGet(settings);
+      await writeAudit(prisma, req, {
+        action: "admin.bot_behavior.read",
+        resource: "tenant_settings",
+        outcome: "ok",
+        details: { tenantId: req.tenantId },
+      });
+      res.json(payload);
+    } catch (err) {
+      console.error("admin bot_behavior read", err);
+      res.status(500).json({ error: "bot_behavior_read_failed" });
+    }
+  }
+);
+
+/**
+ * Update guided bot behavior (merges into Tenant.settings; does not wipe other keys).
+ * Write: config:write.
+ */
+app.patch(
+  "/api/admin/bot-behavior",
+  authLimiter,
+  requirePlatformAuth,
+  loadTenant,
+  assertOperatorTenantPermission("config:write"),
+  async (req, res) => {
+    const tenantId = req.tenantId;
+    const behaviorIn = req.body && req.body.behavior;
+    const merged = mergeBehaviorIncoming(req.tenant?.settings, behaviorIn);
+    const v = validateAndNormalizeBehaviorPatch(merged);
+    if (!v.ok) {
+      return res.status(v.status).json({ error: "validation_failed", details: v.errors });
+    }
+
+    try {
+      const prevSettings = req.tenant?.settings;
+      const base =
+        prevSettings && typeof prevSettings === "object" && !Array.isArray(prevSettings)
+          ? JSON.parse(JSON.stringify(prevSettings))
+          : {};
+      base.behavior = v.normalized;
+      await prisma.tenant.update({
+        where: { id: tenantId },
+        data: { settings: base },
+      });
+      await writeAudit(prisma, req, {
+        action: "admin.bot_behavior.update",
+        resource: "tenant_settings",
+        outcome: "ok",
+        details: { tenantId },
+      });
+      res.json(getBehaviorForGet(base));
+    } catch (err) {
+      console.error("admin bot_behavior update", err);
+      res.status(500).json({ error: "bot_behavior_update_failed" });
+    }
+  }
+);
+
+/**
+ * Business profile (Tenant.settings.businessProfile). Read: config:read.
+ */
+app.get(
+  "/api/admin/business-profile",
+  requirePlatformAuth,
+  loadTenant,
+  assertOperatorTenantPermission("config:read"),
+  async (req, res) => {
+    try {
+      const settings = req.tenant?.settings;
+      const payload = getBusinessProfileForGet(settings);
+      await writeAudit(prisma, req, {
+        action: "admin.business_profile.read",
+        resource: "tenant_settings",
+        outcome: "ok",
+        details: { tenantId: req.tenantId },
+      });
+      res.json(payload);
+    } catch (err) {
+      console.error("admin business_profile read", err);
+      res.status(500).json({ error: "business_profile_read_failed" });
+    }
+  }
+);
+
+/**
+ * Update business profile (merges into Tenant.settings; does not wipe other keys).
+ * Write: config:write.
+ */
+app.patch(
+  "/api/admin/business-profile",
+  authLimiter,
+  requirePlatformAuth,
+  loadTenant,
+  assertOperatorTenantPermission("config:write"),
+  async (req, res) => {
+    const tenantId = req.tenantId;
+    const profileIn = req.body && req.body.businessProfile;
+    const merged = mergeBusinessProfileIncoming(req.tenant?.settings, profileIn);
+    const v = validateAndNormalizeBusinessProfilePatch(merged);
+    if (!v.ok) {
+      return res.status(v.status).json({ error: "validation_failed", details: v.errors });
+    }
+
+    try {
+      const prevSettings = req.tenant?.settings;
+      const base =
+        prevSettings && typeof prevSettings === "object" && !Array.isArray(prevSettings)
+          ? JSON.parse(JSON.stringify(prevSettings))
+          : {};
+      base.businessProfile = v.normalized;
+      await prisma.tenant.update({
+        where: { id: tenantId },
+        data: { settings: base },
+      });
+      await writeAudit(prisma, req, {
+        action: "admin.business_profile.update",
+        resource: "tenant_settings",
+        outcome: "ok",
+        details: { tenantId },
+      });
+      res.json(getBusinessProfileForGet(base));
+    } catch (err) {
+      console.error("admin business_profile update", err);
+      res.status(500).json({ error: "business_profile_update_failed" });
+    }
+  }
+);
+
+/**
+ * Pilot / launch readiness (heuristic, no secrets).
+ * Auth: config:read + tenant context.
+ */
+app.get(
+  "/api/admin/pilot-readiness",
+  requirePlatformAuth,
+  loadTenant,
+  assertOperatorTenantPermission("config:read"),
+  async (req, res) => {
+    try {
+      const tenantId = req.tenantId;
+      const slug = resolveTenantSlug(req);
+      const sh = getAdminServerHints();
+      const verify = await verifyTenantForAdmin(prisma, slug, undefined, {
+        globalOpenaiConfigured: sh.globalOpenaiConfigured,
+        openaiBootOptional: sh.openaiBootOptional,
+      });
+      const readyForChat = verify.ok ? Boolean(verify.readyForChat) : false;
+
+      const [activeKnowledgeCount, conversationCount, leadCount, webhookEnabledCount] = await Promise.all([
+        prisma.knowledgeDocument.count({ where: { tenantId, status: "active" } }),
+        prisma.conversation.count({ where: { tenantId } }),
+        prisma.lead.count({ where: { tenantId } }),
+        prisma.leadWebhook.count({ where: { tenantId, enabled: true } }),
+      ]);
+
+      const integrationKeyConfigured = Boolean(req.tenant?.apiKeyHash);
+      const hideDev =
+        process.env.NODE_ENV === "production" && process.env.ALLOW_ADMIN_BEARER_DEV_TOOLS !== "1";
+
+      const out = computePilotReadiness({
+        tenant: req.tenant,
+        readyForChat,
+        verify,
+        activeKnowledgeCount,
+        conversationCount,
+        leadCount,
+        webhookEnabledCount,
+        integrationKeyConfigured,
+        role: resolveTenantScopedRole(req),
+        devToolsHiddenInProd: hideDev,
+      });
+
+      await writeAudit(prisma, req, {
+        action: "admin.pilot_readiness.read",
+        resource: "tenant_readiness",
+        outcome: "ok",
+        details: { tenantId, status: out.readiness.status, score: out.readiness.score },
+      });
+
+      res.json(out);
+    } catch (err) {
+      console.error("admin pilot_readiness", err);
+      res.status(500).json({ error: "pilot_readiness_failed" });
+    }
+  }
+);
+
+/**
+ * Tenant-scoped conversation list for admin UI.
+ * Auth: platform SSO + funnel:read (same family as /api/revenue/funnel and channel identities).
+ */
+app.get(
+  "/api/admin/conversations",
+  requirePlatformAuth,
+  loadTenant,
+  assertOperatorTenantPermission("funnel:read"),
+  async (req, res) => {
+    const tenantId = req.tenantId;
+    const { limit, offset } = parseAdminListPagination(req);
+    const q = adminSearchText(req);
+    const from = parseOptionalIsoDate(req.query.from);
+    const to = parseOptionalIsoDate(req.query.to);
+
+    const where = {
+      tenantId,
+      ...(from || to
+        ? {
+            startedAt: {
+              ...(from ? { gte: from } : {}),
+              ...(to ? { lte: to } : {}),
+            },
+          }
+        : {}),
+      ...(q
+        ? {
+            OR: [
+              { summary: { contains: q, mode: "insensitive" } },
+              { sessionId: { contains: q, mode: "insensitive" } },
+              { messages: { some: { content: { contains: q, mode: "insensitive" } } } },
+            ],
+          }
+        : {}),
+    };
+
+    try {
+      const [total, rows] = await Promise.all([
+        prisma.conversation.count({ where }),
+        prisma.conversation.findMany({
+          where,
+          orderBy: { startedAt: "desc" },
+          skip: offset,
+          take: limit,
+          select: {
+            id: true,
+            sessionId: true,
+            startedAt: true,
+            endedAt: true,
+            summary: true,
+            summaryUpdatedAt: true,
+            _count: { select: { messages: true } },
+            messages: {
+              orderBy: { createdAt: "desc" },
+              take: 80,
+              select: { role: true, content: true, createdAt: true },
+            },
+          },
+        }),
+      ]);
+
+      const items = rows.map((row) => {
+        let lastUser = "";
+        let lastAssistant = "";
+        let lastAt = row.startedAt;
+        for (const m of row.messages) {
+          if (new Date(m.createdAt) > new Date(lastAt)) lastAt = m.createdAt;
+          const role = String(m.role || "").toLowerCase();
+          if (!lastUser && role === "user") lastUser = m.content || "";
+          if (!lastAssistant && role === "assistant") lastAssistant = m.content || "";
+          if (lastUser && lastAssistant) break;
+        }
+        const updatedAt = row.summaryUpdatedAt || lastAt;
+        return {
+          id: row.id,
+          createdAt: row.startedAt,
+          updatedAt,
+          messageCount: row._count.messages,
+          lastMessageAt: lastAt,
+          lastUserMessage: lastUser.slice(0, 500),
+          lastAssistantMessage: lastAssistant.slice(0, 500),
+          leadCount: 0,
+          channel: null,
+          source: null,
+        };
+      });
+
+      await writeAudit(prisma, req, {
+        action: "admin.conversations.list",
+        resource: "conversation",
+        outcome: "ok",
+        details: { tenantId, limit, offset, qLen: q.length },
+      });
+
+      res.json({ items, total, limit, offset });
+    } catch (err) {
+      console.error("admin conversations list", err);
+      res.status(500).json({ error: "conversations_list_failed" });
+    }
+  }
+);
+
+/**
+ * Single conversation transcript for admin UI (tenant-scoped).
+ * funnel:read — see list route.
+ */
+app.get(
+  "/api/admin/conversations/:id",
+  requirePlatformAuth,
+  loadTenant,
+  assertOperatorTenantPermission("funnel:read"),
+  async (req, res) => {
+    const tenantId = req.tenantId;
+    const id = String(req.params.id || "").trim();
+    if (!id) return res.status(400).json({ error: "id_required" });
+
+    try {
+      const convo = await prisma.conversation.findFirst({
+        where: { id, tenantId },
+        select: {
+          id: true,
+          sessionId: true,
+          startedAt: true,
+          endedAt: true,
+          summary: true,
+          summaryUpdatedAt: true,
+        },
+      });
+      if (!convo) return res.status(404).json({ error: "not_found" });
+
+      const messages = await prisma.message.findMany({
+        where: { conversationId: id },
+        orderBy: { createdAt: "asc" },
+        take: 500,
+        select: { id: true, role: true, content: true, createdAt: true },
+      });
+
+      const lastMsg = messages.length ? messages[messages.length - 1].createdAt : convo.startedAt;
+      const updatedAt = convo.summaryUpdatedAt || lastMsg;
+
+      await writeAudit(prisma, req, {
+        action: "admin.conversations.read",
+        resource: "conversation",
+        resourceId: id,
+        outcome: "ok",
+        details: { tenantId, messageCount: messages.length },
+      });
+
+      res.json({
+        id: convo.id,
+        createdAt: convo.startedAt,
+        updatedAt,
+        sessionId: convo.sessionId,
+        messages,
+        leads: [],
+      });
+    } catch (err) {
+      console.error("admin conversation detail", err);
+      res.status(500).json({ error: "conversation_read_failed" });
+    }
+  }
+);
+
+/**
+ * Tenant-scoped leads list for admin UI.
+ * funnel:read — operational CRM-style read aligned with funnel metrics.
+ */
+app.get(
+  "/api/admin/leads",
+  requirePlatformAuth,
+  loadTenant,
+  assertOperatorTenantPermission("funnel:read"),
+  async (req, res) => {
+    const tenantId = req.tenantId;
+    const { limit, offset } = parseAdminListPagination(req);
+    const q = adminSearchText(req);
+    const from = parseOptionalIsoDate(req.query.from);
+    const to = parseOptionalIsoDate(req.query.to);
+
+    const where = {
+      tenantId,
+      ...(from || to
+        ? {
+            createdAt: {
+              ...(from ? { gte: from } : {}),
+              ...(to ? { lte: to } : {}),
+            },
+          }
+        : {}),
+      ...(q
+        ? {
+            OR: [
+              { name: { contains: q, mode: "insensitive" } },
+              { email: { contains: q, mode: "insensitive" } },
+              { phone: { contains: q, mode: "insensitive" } },
+              { snippet: { contains: q, mode: "insensitive" } },
+            ],
+          }
+        : {}),
+    };
+
+    try {
+      const [total, rows] = await Promise.all([
+        prisma.lead.count({ where }),
+        prisma.lead.findMany({
+          where,
+          orderBy: { createdAt: "desc" },
+          skip: offset,
+          take: limit,
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            phone: true,
+            source: true,
+            status: true,
+            createdAt: true,
+            score: true,
+          },
+        }),
+      ]);
+
+      const items = rows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        email: r.email,
+        phone: r.phone,
+        source: r.source,
+        status: r.status,
+        createdAt: r.createdAt,
+        conversationId: null,
+      }));
+
+      await writeAudit(prisma, req, {
+        action: "admin.leads.list",
+        resource: "lead",
+        outcome: "ok",
+        details: { tenantId, limit, offset, qLen: q.length },
+      });
+
+      res.json({ items, total, limit, offset });
+    } catch (err) {
+      console.error("admin leads list", err);
+      res.status(500).json({ error: "leads_list_failed" });
+    }
+  }
+);
+
+app.post(
+  "/api/keys/rotate",
+  authLimiter,
+  requirePlatformAuth,
+  loadTenant,
+  assertOperatorTenantPermission("config:write"),
+  async (req, res) => {
+    const tenantId = req.tenantId;
+    try {
+      const clearKey = `qmb_${randomBytes(24).toString("hex")}`;
+      const hash = createHash("sha256").update(clearKey).digest("hex");
+      await prisma.tenant.update({
+        where: { id: tenantId },
+        data: {
+          apiKeyHash: hash,
+          apiKeyLast4: clearKey.slice(-4),
+          apiKeyRotatedAt: new Date(),
+        },
+      });
+      await writeAudit(prisma, req, {
+        action: "apikey.rotate",
+        resource: "tenant_apikey",
+        outcome: "ok",
+        details: { tenantId, membershipRole: req.effectiveTenantRole || null, superBypass: Boolean(req.operatorTenantSuperBypass) },
+      });
+      res.json({ apiKey: clearKey, rotatedAt: new Date().toISOString() });
+    } catch (err) {
+      console.error("API key rotate failed");
+      await writeAudit(prisma, req, {
+        action: "apikey.rotate",
+        resource: "tenant_apikey",
+        outcome: "error",
+        details: { tenantId, errorCode: "rotate_exception" },
+      });
+      res.status(500).json({ error: "api_key_rotate_failed" });
+    }
+  }
+);
 
 // ---- Admin tenant provisioning (platform SSO + tenants:provision) ----
 app.get(
   "/api/admin/tenants",
   requirePlatformAuth,
   requirePermission("tenants:provision"),
+  requireTenantProvisioningPlatformRole,
   async (_req, res) => {
     try {
       const tenants = await listTenantsForAdmin(prisma);
@@ -1098,6 +2193,7 @@ app.post(
   authLimiter,
   requirePlatformAuth,
   requirePermission("tenants:provision"),
+  requireTenantProvisioningPlatformRole,
   async (req, res) => {
     try {
       const body = req.body || {};
@@ -1197,6 +2293,7 @@ app.get(
   "/api/admin/tenants/:slug/verify",
   requirePlatformAuth,
   requirePermission("tenants:provision"),
+  requireTenantProvisioningPlatformRole,
   async (req, res) => {
     try {
       const sh = getAdminServerHints();
@@ -1220,6 +2317,7 @@ app.post(
   authLimiter,
   requirePlatformAuth,
   requirePermission("tenants:provision"),
+  requireTenantProvisioningPlatformRole,
   async (req, res) => {
     try {
       const out = await bootstrapPromptsForTenant(prisma, req.params.slug);
@@ -1247,6 +2345,7 @@ app.post(
   authLimiter,
   requirePlatformAuth,
   requirePermission("tenants:provision"),
+  requireTenantProvisioningPlatformRole,
   async (req, res) => {
     try {
       const r = await rotateTenantIntegrationKey(prisma, req.params.slug);
@@ -1297,7 +2396,7 @@ app.get("/api/integrations/webhooks/meta", requirePlatformAuth, requirePermissio
   res.json({ schemaVersion: INTEGRATION_SCHEMA_VERSION, eventTypes: listEventTypes() });
 });
 
-app.get("/api/integrations/webhooks", requirePlatformAuth, requirePermission("config:read"), loadTenant, async (req, res) => {
+app.get("/api/integrations/webhooks", requirePlatformAuth, loadTenant, assertOperatorTenantPermission("config:read"), async (req, res) => {
   const rows = await prisma.leadWebhook.findMany({
     where: { tenantId: req.tenantId },
     orderBy: { createdAt: "desc" },
@@ -1312,7 +2411,7 @@ app.get("/api/integrations/webhooks", requirePlatformAuth, requirePermission("co
   res.json({ webhooks: rows });
 });
 
-app.post("/api/integrations/webhooks", authLimiter, requirePlatformAuth, requirePermission("config:write"), loadTenant, async (req, res) => {
+app.post("/api/integrations/webhooks", authLimiter, requirePlatformAuth, loadTenant, assertOperatorTenantPermission("config:write"), async (req, res) => {
   try {
     const body = req.body || {};
     const endpoint = String(body.endpoint || "").trim();
@@ -1353,7 +2452,7 @@ app.post("/api/integrations/webhooks", authLimiter, requirePlatformAuth, require
   }
 });
 
-app.patch("/api/integrations/webhooks/:id", authLimiter, requirePlatformAuth, requirePermission("config:write"), loadTenant, async (req, res) => {
+app.patch("/api/integrations/webhooks/:id", authLimiter, requirePlatformAuth, loadTenant, assertOperatorTenantPermission("config:write"), async (req, res) => {
   try {
     const { id } = req.params;
     const existing = await prisma.leadWebhook.findFirst({
@@ -1378,11 +2477,17 @@ app.patch("/api/integrations/webhooks/:id", authLimiter, requirePlatformAuth, re
       data.secret = String(body.secret).slice(0, 512);
     }
 
-    const row = await prisma.leadWebhook.update({
-      where: { id },
+    const upd = await prisma.leadWebhook.updateMany({
+      where: { id, tenantId: req.tenantId },
       data,
+    });
+    if (upd.count === 0) return res.status(404).json({ error: "not_found" });
+
+    const row = await prisma.leadWebhook.findFirst({
+      where: { id, tenantId: req.tenantId },
       select: { id: true, endpoint: true, enabled: true, events: true, createdAt: true },
     });
+    if (!row) return res.status(404).json({ error: "not_found" });
 
     await writeAudit(prisma, req, {
       action: "webhook.update",
@@ -1397,15 +2502,11 @@ app.patch("/api/integrations/webhooks/:id", authLimiter, requirePlatformAuth, re
   }
 });
 
-app.delete("/api/integrations/webhooks/:id", authLimiter, requirePlatformAuth, requirePermission("config:write"), loadTenant, async (req, res) => {
+app.delete("/api/integrations/webhooks/:id", authLimiter, requirePlatformAuth, loadTenant, assertOperatorTenantPermission("config:write"), async (req, res) => {
   try {
     const { id } = req.params;
-    const existing = await prisma.leadWebhook.findFirst({
-      where: { id, tenantId: req.tenantId },
-    });
-    if (!existing) return res.status(404).json({ error: "not_found" });
-
-    await prisma.leadWebhook.delete({ where: { id } });
+    const del = await prisma.leadWebhook.deleteMany({ where: { id, tenantId: req.tenantId } });
+    if (del.count === 0) return res.status(404).json({ error: "not_found" });
     await writeAudit(prisma, req, {
       action: "webhook.delete",
       resource: "lead_webhook",
@@ -1422,8 +2523,8 @@ app.delete("/api/integrations/webhooks/:id", authLimiter, requirePlatformAuth, r
 app.get(
   "/api/integrations/branding",
   requirePlatformAuth,
-  requirePermission("config:read"),
   loadTenant,
+  assertOperatorTenantPermission("config:read"),
   async (req, res) => {
     try {
       const t = req.tenant;
@@ -1468,8 +2569,8 @@ app.patch(
   "/api/integrations/branding",
   authLimiter,
   requirePlatformAuth,
-  requirePermission("config:write"),
   loadTenant,
+  assertOperatorTenantPermission("config:write"),
   async (req, res) => {
     try {
       const t = req.tenant;
@@ -1541,7 +2642,7 @@ app.patch(
 );
 
 // ---- Human handoff cockpit API ----
-app.post('/api/handoff/sessions', requirePlatformAuth, requirePermission("handoff:write"), loadTenant, async (req, res) => {
+app.post('/api/handoff/sessions', requirePlatformAuth, loadTenant, assertOperatorTenantPermission("handoff:write"), async (req, res) => {
   try {
     const { sessionId, reason, priority, transcript } = req.body || {};
     const row = await prisma.handoffSession.create({
@@ -1566,20 +2667,36 @@ app.post('/api/handoff/sessions', requirePlatformAuth, requirePermission("handof
   }
 });
 
-app.post('/api/handoff/:id/assign', requirePlatformAuth, requirePermission("handoff:write"), loadTenant, async (req, res) => {
+app.post('/api/handoff/:id/assign', requirePlatformAuth, loadTenant, assertOperatorTenantPermission("handoff:write"), async (req, res) => {
   try {
-    const row = await prisma.handoffSession.update({
-      where: { id: req.params.id },
+    const id = String(req.params.id || "").trim();
+    if (!id) return res.status(400).json({ error: "id_required" });
+
+    const existing = await prisma.handoffSession.findFirst({
+      where: { id, tenantId: req.tenantId },
+    });
+    if (!existing) return res.status(404).json({ error: "not_found" });
+
+    const upd = await prisma.handoffSession.updateMany({
+      where: { id, tenantId: req.tenantId },
       data: {
         assignedTo: String(req.body?.assignedTo || req.platformUser?.email || "operator"),
         status: String(req.body?.status || "in_progress"),
       },
     });
+    if (upd.count === 0) return res.status(404).json({ error: "not_found" });
+
+    const row = await prisma.handoffSession.findFirst({
+      where: { id, tenantId: req.tenantId },
+    });
+    if (!row) return res.status(404).json({ error: "not_found" });
+
     await writeAudit(prisma, req, {
       action: "handoff.assign",
       resource: "handoff_session",
       resourceId: row.id,
       outcome: "ok",
+      details: { tenantId: req.tenantId },
     });
     res.json({ handoff: row });
   } catch (err) {
@@ -1588,10 +2705,39 @@ app.post('/api/handoff/:id/assign', requirePlatformAuth, requirePermission("hand
 });
 
 // ---- Omnichannel orchestration (web-first + webhook adapters) ----
-app.post('/api/channels/events', loadTenant, async (req, res) => {
+app.post(
+  "/api/channels/events",
+  authLimiter,
+  (req, res, next) => {
+    if (
+      !requireEnvSecretOrFailClosed({
+        req,
+        res,
+        envName: "CHANNEL_EVENTS_SECRET",
+        headerName: "x-channel-events-secret",
+        notConfiguredError: "channel_events_secret_not_configured",
+        invalidError: "channel_events_secret_invalid",
+      })
+    ) {
+      return;
+    }
+    next();
+  },
+  loadTenant,
+  async (req, res) => {
   try {
     const { channel = "web", externalUserId = "", text = "", metadata = null } = req.body || {};
     if (!externalUserId) return res.status(400).json({ error: "external_user_id_required" });
+    const textSafe = String(text || "").slice(0, 8000);
+    let metadataSafe = undefined;
+    if (metadata != null) {
+      if (typeof metadata !== "object" || Array.isArray(metadata)) {
+        return res.status(400).json({ error: "metadata_must_be_object" });
+      }
+      const raw = JSON.stringify(metadata);
+      if (raw.length > 8192) return res.status(400).json({ error: "metadata_too_large" });
+      metadataSafe = metadata;
+    }
     const identity = await prisma.channelIdentity.upsert({
       where: {
         tenantId_channel_externalUserId: {
@@ -1600,13 +2746,13 @@ app.post('/api/channels/events', loadTenant, async (req, res) => {
           externalUserId: String(externalUserId),
         },
       },
-      update: { metadata: metadata ?? undefined, lastSeenAt: new Date() },
+      update: { metadata: metadataSafe ?? undefined, lastSeenAt: new Date() },
       create: {
         tenantId: req.tenantId,
         channel: String(channel),
         externalUserId: String(externalUserId),
         sessionId: req.cookies?.sid || null,
-        metadata: metadata ?? undefined,
+        metadata: metadataSafe ?? undefined,
       },
     });
     await prisma.channelMessage.create({
@@ -1615,8 +2761,8 @@ app.post('/api/channels/events', loadTenant, async (req, res) => {
         channel: String(channel),
         externalUserId: String(externalUserId),
         direction: "inbound",
-        content: String(text || ""),
-        metadata: metadata ?? undefined,
+        content: textSafe,
+        metadata: metadataSafe ?? undefined,
       },
     });
     await writeAudit(prisma, req, {
@@ -1633,9 +2779,10 @@ app.post('/api/channels/events', loadTenant, async (req, res) => {
     console.error("channel event failed", err.message);
     res.status(500).json({ error: "channel_event_failed" });
   }
-});
+  }
+);
 
-app.get('/api/channels/identities', requirePlatformAuth, requirePermission("funnel:read"), loadTenant, async (req, res) => {
+app.get('/api/channels/identities', requirePlatformAuth, loadTenant, assertOperatorTenantPermission("funnel:read"), async (req, res) => {
   const rows = await prisma.channelIdentity.findMany({
     where: { tenantId: req.tenantId },
     orderBy: { lastSeenAt: "desc" },
@@ -1645,7 +2792,7 @@ app.get('/api/channels/identities', requirePlatformAuth, requirePermission("funn
 });
 
 // ---- Booking + quoting automation ----
-app.post('/api/appointments', requirePlatformAuth, requirePermission("booking:write"), loadTenant, async (req, res) => {
+app.post('/api/appointments', requirePlatformAuth, loadTenant, assertOperatorTenantPermission("booking:write"), async (req, res) => {
   try {
     const body = req.body || {};
     const row = await prisma.appointment.create({
@@ -1679,7 +2826,7 @@ app.post('/api/appointments', requirePlatformAuth, requirePermission("booking:wr
   }
 });
 
-app.post('/api/quotes', requirePlatformAuth, requirePermission("quote:write"), loadTenant, async (req, res) => {
+app.post('/api/quotes', requirePlatformAuth, loadTenant, assertOperatorTenantPermission("quote:write"), async (req, res) => {
   try {
     const body = req.body || {};
     const row = await prisma.quote.create({
@@ -1715,34 +2862,81 @@ app.post('/api/quotes', requirePlatformAuth, requirePermission("quote:write"), l
 });
 
 // ---- Compliance and trust APIs ----
-app.post('/api/compliance/consent', loadTenant, async (req, res) => {
-  try {
-    const body = req.body || {};
-    const row = await prisma.consentRecord.create({
-      data: {
-        tenantId: req.tenantId,
-        subject: String(body.subject || req.cookies?.sid || "anonymous"),
-        purpose: String(body.purpose || "messaging"),
-        granted: Boolean(body.granted),
-        source: String(body.source || "web"),
-        metadata: body.metadata ?? undefined,
-      },
-    });
-    await writeAudit(prisma, req, {
-      actorType: "end_user",
-      action: "consent.record",
-      resource: "consent_record",
-      resourceId: row.id,
-      outcome: "ok",
-      details: { purpose: row.purpose, granted: row.granted, source: row.source },
-    });
-    res.status(201).json({ consent: row });
-  } catch (err) {
-    res.status(500).json({ error: "consent_write_failed" });
-  }
-});
+app.post(
+  "/api/compliance/consent",
+  authLimiter,
+  (req, res, next) => {
+    if (
+      !requireEnvSecretOrFailClosed({
+        req,
+        res,
+        envName: "CONSENT_WRITE_SECRET",
+        headerName: "x-consent-write-secret",
+        notConfiguredError: "consent_write_secret_not_configured",
+        invalidError: "consent_write_secret_invalid",
+      })
+    ) {
+      return;
+    }
+    next();
+  },
+  loadTenant,
+  async (req, res) => {
+    try {
+      const body = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
+      const subject = String(body.subject != null && body.subject !== "" ? body.subject : req.cookies?.sid || "anonymous")
+        .trim()
+        .slice(0, 500);
+      const purpose = String(body.purpose != null ? body.purpose : "messaging")
+        .trim()
+        .slice(0, 200);
+      const source = String(body.source != null ? body.source : "web")
+        .trim()
+        .slice(0, 100);
+      let metadata = undefined;
+      if (body.metadata != null) {
+        if (typeof body.metadata !== "object" || Array.isArray(body.metadata)) {
+          return res.status(400).json({ error: "metadata_must_be_object" });
+        }
+        const raw = JSON.stringify(body.metadata);
+        if (raw.length > 4096) return res.status(400).json({ error: "metadata_too_large" });
+        metadata = body.metadata;
+      }
 
-app.get('/api/compliance/export', requirePlatformAuth, requirePermission("audit:read"), loadTenant, async (req, res) => {
+      const row = await prisma.consentRecord.create({
+        data: {
+          tenantId: req.tenantId,
+          subject: subject || "anonymous",
+          purpose: purpose || "messaging",
+          granted: Boolean(body.granted),
+          source: source || "web",
+          metadata,
+        },
+      });
+      await writeAudit(prisma, req, {
+        actorType: "end_user",
+        action: "consent.record",
+        resource: "consent_record",
+        resourceId: row.id,
+        outcome: "ok",
+        details: { purpose: row.purpose, granted: row.granted, source: row.source },
+      });
+      res.status(201).json({
+        consent: {
+          id: row.id,
+          purpose: row.purpose,
+          granted: row.granted,
+          source: row.source,
+          createdAt: row.createdAt,
+        },
+      });
+    } catch (err) {
+      res.status(500).json({ error: "consent_write_failed" });
+    }
+  }
+);
+
+app.get('/api/compliance/export', requirePlatformAuth, loadTenant, assertOperatorTenantPermission("audit:read"), async (req, res) => {
   const since = req.query.since ? new Date(String(req.query.since)) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
   const [consents, audits] = await Promise.all([
     prisma.consentRecord.findMany({ where: { tenantId: req.tenantId, createdAt: { gte: since } } }),
@@ -1762,7 +2956,7 @@ app.get('/api/compliance/export', requirePlatformAuth, requirePermission("audit:
 });
 
 // ---- Revenue and conversion intelligence ----
-app.get('/api/revenue/funnel', requirePlatformAuth, requirePermission("funnel:read"), loadTenant, async (req, res) => {
+app.get('/api/revenue/funnel', requirePlatformAuth, loadTenant, assertOperatorTenantPermission("funnel:read"), async (req, res) => {
   const tenantId = req.tenantId;
   const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
   const [leads, booked, quoted, won] = await Promise.all([
@@ -1786,7 +2980,7 @@ app.get('/api/revenue/funnel', requirePlatformAuth, requirePermission("funnel:re
 });
 
 // ---- Optimization loop (prompt/model variants to revenue outcomes) ----
-app.post('/api/optimize/record', requirePlatformAuth, requirePermission("optimize:write"), loadTenant, async (req, res) => {
+app.post('/api/optimize/record', requirePlatformAuth, loadTenant, assertOperatorTenantPermission("optimize:write"), async (req, res) => {
   try {
     const { experimentKey, variant, impressions = 0, conversions = 0, revenue = 0 } = req.body || {};
     if (!experimentKey || !variant) return res.status(400).json({ error: "experiment_key_and_variant_required" });
@@ -1825,7 +3019,7 @@ app.post('/api/optimize/record', requirePlatformAuth, requirePermission("optimiz
   }
 });
 
-app.get('/api/optimize/recommendation', requirePlatformAuth, requirePermission("optimize:read"), loadTenant, async (req, res) => {
+app.get('/api/optimize/recommendation', requirePlatformAuth, loadTenant, assertOperatorTenantPermission("optimize:read"), async (req, res) => {
   const experimentKey = String(req.query.experimentKey || "default");
   const runs = await prisma.optimizationRun.findMany({
     where: { tenantId: req.tenantId, experimentKey },
@@ -1841,7 +3035,7 @@ app.get('/api/optimize/recommendation', requirePlatformAuth, requirePermission("
 });
 
 // ---- Re-engagement campaigns ----
-app.post('/api/reengagement/campaigns', requirePlatformAuth, requirePermission("campaign:write"), loadTenant, async (req, res) => {
+app.post('/api/reengagement/campaigns', requirePlatformAuth, loadTenant, assertOperatorTenantPermission("campaign:write"), async (req, res) => {
   try {
     const body = req.body || {};
     const row = await prisma.reengagementCampaign.create({
@@ -1879,7 +3073,7 @@ app.post('/api/reengagement/campaigns', requirePlatformAuth, requirePermission("
 });
 
 // ---- Competitor-aware benchmarking ----
-app.post('/api/benchmarks/run', requirePlatformAuth, requirePermission("benchmark:write"), loadTenant, async (req, res) => {
+app.post('/api/benchmarks/run', requirePlatformAuth, loadTenant, assertOperatorTenantPermission("benchmark:write"), async (req, res) => {
   try {
     const body = req.body || {};
     const baseline = body.baseline ?? {};
@@ -1908,7 +3102,7 @@ app.post('/api/benchmarks/run', requirePlatformAuth, requirePermission("benchmar
   }
 });
 
-app.get('/api/benchmarks', requirePlatformAuth, requirePermission("benchmark:read"), loadTenant, async (req, res) => {
+app.get('/api/benchmarks', requirePlatformAuth, loadTenant, assertOperatorTenantPermission("benchmark:read"), async (req, res) => {
   const rows = await prisma.benchmarkRun.findMany({
     where: { tenantId: req.tenantId },
     orderBy: { createdAt: "desc" },
@@ -1918,7 +3112,7 @@ app.get('/api/benchmarks', requirePlatformAuth, requirePermission("benchmark:rea
 });
 
 // ---- Self-serve onboarding wizard APIs ----
-app.post('/api/onboarding/start', requirePlatformAuth, requirePermission("onboarding:write"), loadTenant, async (req, res) => {
+app.post('/api/onboarding/start', requirePlatformAuth, loadTenant, assertOperatorTenantPermission("onboarding:write"), async (req, res) => {
   const checklist = {
     branding: false,
     prompts: false,
@@ -1943,7 +3137,7 @@ app.post('/api/onboarding/start', requirePlatformAuth, requirePermission("onboar
   res.status(201).json({ onboarding: row });
 });
 
-app.post('/api/onboarding/:id/step', requirePlatformAuth, requirePermission("onboarding:write"), loadTenant, async (req, res) => {
+app.post('/api/onboarding/:id/step', requirePlatformAuth, loadTenant, assertOperatorTenantPermission("onboarding:write"), async (req, res) => {
   const step = String(req.body?.step || "");
   const row = await prisma.onboardingSession.findUnique({ where: { id: req.params.id } });
   if (!row || row.tenantId !== req.tenantId) return res.status(404).json({ error: "onboarding_not_found" });
@@ -2034,28 +3228,147 @@ app.post("/api/integrations/v1/inbound/:provider", requireTenantApiKey, async (r
 });
 
 // ---- Generic webhook adapter for external CRM/booking stacks ----
-app.post('/api/integrations/webhook-test', requirePlatformAuth, requirePermission("config:write"), loadTenant, async (req, res) => {
-  const { endpoint, payload = {}, secret = "" } = req.body || {};
-  if (!endpoint) return res.status(400).json({ error: "endpoint_required" });
-  try {
-    const out = await sendGenericWebhook(String(endpoint), { tenantId: req.tenantId, ...payload }, String(secret || ""));
-    await writeAudit(prisma, req, {
-      action: "webhook.test",
-      resource: "outbound_webhook_test",
-      outcome: out.ok ? "ok" : "fail",
-      details: { httpStatus: out.status, endpointPreview: String(endpoint).slice(0, 160) },
-    });
-    res.json({ ok: out.ok, status: out.status });
-  } catch (err) {
-    await writeAudit(prisma, req, {
-      action: "webhook.test",
-      resource: "outbound_webhook_test",
-      outcome: "fail",
-      details: { error: String(err?.message || err).slice(0, 500) },
-    });
-    res.status(502).json({ error: "webhook_failed", message: err.message });
+/**
+ * Capability probe: same auth chain as POST webhook-test, without sending HTTP to customer URLs.
+ */
+app.get(
+  "/api/integrations/webhook-test",
+  authLimiter,
+  requirePlatformAuth,
+  loadTenant,
+  assertOperatorTenantPermission("config:write"),
+  (_req, res) => {
+    res.json({ ok: true, available: true });
   }
-});
+);
+
+/**
+ * Webhook connectivity test (tenant-scoped).
+ * Registered LeadWebhook rows only — arbitrary URLs are disabled to reduce SSRF risk.
+ * POST body: { webhookId?, eventType? } — omit webhookId to test all enabled hooks for this tenant.
+ */
+app.post(
+  "/api/integrations/webhook-test",
+  authLimiter,
+  requirePlatformAuth,
+  loadTenant,
+  assertOperatorTenantPermission("config:write"),
+  async (req, res) => {
+    const tenantId = req.tenantId;
+    const body = req.body || {};
+    const endpointRaw = body.endpoint != null ? String(body.endpoint).trim() : "";
+    if (endpointRaw) {
+      return res.status(400).json({
+        error: "arbitrary_endpoint_disabled",
+        message:
+          "Arbitrary URL webhook tests are disabled. Use a registered webhook (webhookId) or omit it to test all enabled outbound webhooks for this tenant.",
+      });
+    }
+
+    /** @type {{ webhookId: string|null, endpoint: string, ok: boolean, status: number, durationMs: number, error: string|null }[]} */
+    const results = [];
+
+    const allowedTypes = new Set(listEventTypes());
+    let eventType = body.eventType != null ? String(body.eventType).trim() : EventType.ADMIN_WEBHOOK_TEST;
+    if (!eventType) eventType = EventType.ADMIN_WEBHOOK_TEST;
+    if (!allowedTypes.has(eventType)) {
+      return res.status(400).json({ error: "invalid_event_type", allowed: [...allowedTypes] });
+    }
+
+    const webhookId = body.webhookId != null ? String(body.webhookId).trim() : "";
+    const hooks = await prisma.leadWebhook.findMany({
+      where: {
+        tenantId,
+        enabled: true,
+        ...(webhookId ? { id: webhookId } : {}),
+      },
+    });
+
+    if (webhookId && hooks.length === 0) {
+      return res.status(404).json({ error: "webhook_not_found" });
+    }
+
+    const targets = hooks.filter((h) => webhookSubscribesToEvent(h.events, eventType));
+    if (!targets.length) {
+      await writeAudit(prisma, req, {
+        action: "webhook.test",
+        resource: "outbound_webhook_test",
+        outcome: "ok",
+        details: { mode: "registered", tested: 0, eventType, reason: "no_subscribers" },
+      });
+      return res.json({
+        ok: true,
+        tested: 0,
+        results: [],
+        note:
+          hooks.length === 0
+            ? "no_webhooks"
+            : "no_hooks_subscribed_to_event",
+      });
+    }
+
+    const testData =
+      eventType === EventType.ADMIN_WEBHOOK_TEST
+        ? {
+            test: true,
+            message:
+              "Solomon operator connectivity test. Not a real lead, conversation, or production integration event.",
+          }
+        : {
+            test: true,
+            simulated: true,
+            message:
+              "Synthetic test delivery from Solomon admin. Not a real production record — receivers should treat as non-prod.",
+          };
+
+    const envelope = buildEnvelope(eventType, tenantId, testData);
+
+    for (const hook of targets) {
+      const t0 = Date.now();
+      try {
+        const out = await sendGenericWebhook(hook.endpoint, envelope, hook.secret || "");
+        const durationMs = Date.now() - t0;
+        results.push({
+          webhookId: hook.id,
+          endpoint: String(hook.endpoint || "").slice(0, 200),
+          ok: out.ok,
+          status: out.status,
+          durationMs,
+          error: out.ok ? null : "http_non_success",
+        });
+      } catch (err) {
+        const durationMs = Date.now() - t0;
+        results.push({
+          webhookId: hook.id,
+          endpoint: String(hook.endpoint || "").slice(0, 200),
+          ok: false,
+          status: err.response?.status ?? 0,
+          durationMs,
+          error: String(err?.message || err).slice(0, 500),
+        });
+      }
+    }
+
+    const allOk = results.length > 0 && results.every((r) => r.ok);
+    await writeAudit(prisma, req, {
+      action: "webhook.test",
+      resource: "outbound_webhook_test",
+      outcome: allOk ? "ok" : "fail",
+      details: {
+        mode: "registered",
+        tested: results.length,
+        eventType,
+        webhookId: webhookId || null,
+      },
+    });
+
+    res.json({
+      ok: allOk,
+      tested: results.length,
+      results,
+    });
+  }
+);
 
 // ---- SSO Callback (Platform portal → Solomon) ----
 app.get('/sso/callback', authLimiter, async (req, res) => {
@@ -2223,6 +3536,37 @@ app.get('/env.css', async (req, res) => {
     res.set('Cache-Control', 'no-store');
     return res.send(`:root{--brand:#6B705C;--brandHover:#556052;--glassBg:rgba(250,248,244,0.88);--glassTop:rgba(250,248,244,0.78);--blur:10px;--botBg:#F4F1EA;--botText:#2C2C2C;--userBg:#8A7B68;--userText:#FFFFFF;--borderColor:#D9D6CE;--headerGlow:radial-gradient(50% 50% at 50% 50%, rgba(107,112,92,0.35) 0%, rgba(107,112,92,0) 70%);--watermarkUrl:none;--font:'Segoe UI', system-ui, sans-serif;}`);
   }
+});
+
+attachClientPortalRoutes(app, {
+  prisma,
+  requirePlatformAuth,
+  platformOperatorCapable,
+  loadClientTenant,
+  assertTenantAccess,
+  requireClientPermission,
+  authLimiter,
+  writeAudit,
+  retrieveContext,
+  getBehaviorForGet,
+  mergeBehaviorIncoming,
+  validateAndNormalizeBehaviorPatch,
+  getBusinessProfileForGet,
+  mergeBusinessProfileIncoming,
+  validateAndNormalizeBusinessProfilePatch,
+  computePilotReadiness,
+  verifyTenantForAdmin,
+  getAdminServerHints,
+  normalizeEmbedTheme,
+  clipCssishToken,
+  BRANDING_COLUMNS,
+  listEventTypes,
+  INTEGRATION_SCHEMA_VERSION,
+  sendGenericWebhook,
+  parseAdminListPagination,
+  adminSearchText,
+  parseOptionalIsoDate,
+  normalizeRole: normalizeMembershipRole,
 });
 
 if (process.env.ENABLE_HEARTBEAT === '1') {

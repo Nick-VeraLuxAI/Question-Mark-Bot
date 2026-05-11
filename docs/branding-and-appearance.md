@@ -10,7 +10,7 @@ Visual tokens live on the `Tenant` model (`brandColor`, `botBg`, `userBg`, `glas
 ## Embed theme (light / dark / auto)
 
 - **Tenant default** — `settings.appearance.theme`: `auto` | `light` | `dark` (stored in `Tenant.settings` JSON).
-- **Public API** — `GET /api/public/embed-config?tenant=` returns `{ tenantId, theme }` for the chat script (rate-limited). Used by `public/solomon.js` before applying `data-theme` on `<html>`.
+- **Public API** — `GET /api/public/embed-config?tenant=` returns `{ tenantSlug, theme, ...copy }` for the chat script (rate-limited). Internal DB `tenantId` is not exposed. Used by `public/solomon.js` before applying `data-theme` on `<html>`.
 - **Visitor override** — the widget header includes a theme control. It stores `solomon_theme_user` in `localStorage` (`light` or `dark`) or clears it to follow the tenant default again.
 - **CSS** — `public/solomon.css` uses `@media (prefers-color-scheme: dark)` on `html:not([data-theme])` plus `html[data-theme="dark"]` / `html[data-theme="light"]` overrides.
 

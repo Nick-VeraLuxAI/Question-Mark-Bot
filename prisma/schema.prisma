@@ -83,9 +83,28 @@ model Tenant {
   benchmarkRuns BenchmarkRun[]
   onboardingSessions OnboardingSession[]
   optimizationRuns OptimizationRun[]
+  memberships TenantMembership[]
 
   // Bot prompts (DB-first: system / policy / voice)
   prompts Json @default("{}")
+}
+
+model TenantMembership {
+  id        String   @id @default(cuid())
+  tenantId  String
+  userId    String
+  email     String?
+  role      String   @default("viewer")
+  status    String   @default("active")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, userId])
+  @@index([userId])
+  @@index([email])
+  @@index([tenantId])
 }
 
 model Conversation {
