@@ -37,7 +37,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    command: ["sh", "-c", "npx prisma migrate deploy && npm run db:seed"]
+    # db push: full schema on empty DB (migration order in repo is not linear; use migrate deploy in CI/prod with a repaired history)
+    command: ["sh", "-c", "npx prisma db push && npm run db:seed"]
     restart: "no"
 
   api:
@@ -51,6 +52,9 @@ services:
       REDIS_URL: redis://redis:6379
       NODE_ENV: production
       PORT: "8080"
+      # client = visitor-facing copy on / ; internal = Solomon operator preview (see branch internal)
+      UI_PROFILE: ${UI_PROFILE:-client}
+      PUBLIC_PRODUCT_LABEL: ${PUBLIC_PRODUCT_LABEL:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://127.0.0.1:8080,http://localhost:8080}
       DEFAULT_TENANT: ${DEFAULT_TENANT:-default}
     depends_on:

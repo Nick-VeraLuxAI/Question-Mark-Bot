@@ -30,6 +30,7 @@ const {
   logProductionBootWarnings,
   logRuntimeModeHint,
 } = require("./utils/bootValidate");
+const { buildPublicEmbedCopy } = require("./utils/embedCopy");
 const { sendGenericWebhook } = require("./utils/webhook");
 const {
   EventType,
@@ -940,20 +941,29 @@ app.get("/api/public/embed-config", publicEmbedLimiter, async (req, res) => {
     const slug = resolveTenantSlug(req);
     let tenant = await prisma.tenant.findFirst({
       where: { OR: [{ subdomain: slug }, { id: slug }] },
-      select: { id: true, settings: true },
+      select: { id: true, name: true, settings: true },
     });
     if (!tenant && slug !== DEFAULT_TENANT) {
       tenant = await prisma.tenant.findFirst({
         where: { OR: [{ subdomain: DEFAULT_TENANT }, { id: DEFAULT_TENANT }] },
-        select: { id: true, settings: true },
+        select: { id: true, name: true, settings: true },
       });
     }
     const settings =
       tenant?.settings && typeof tenant.settings === "object" ? tenant.settings : {};
     const appearance = settings.appearance && typeof settings.appearance === "object" ? settings.appearance : {};
     const theme = normalizeEmbedTheme(appearance.theme);
+    const copy = buildPublicEmbedCopy({
+      uiProfileEnv: process.env.UI_PROFILE,
+      publicProductLabelEnv: process.env.PUBLIC_PRODUCT_LABEL,
+      tenant,
+    });
     res.set("Cache-Control", "public, max-age=60");
-    res.json({ tenantId: tenant?.id ?? null, theme });
+    res.json({
+      tenantId: tenant?.id ?? null,
+      theme,
+      ...copy,
+    });
   } catch (e) {
     console.error("embed-config", e);
     res.status(500).json({ error: "embed_config_failed" });

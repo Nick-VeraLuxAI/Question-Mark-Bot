@@ -11,15 +11,16 @@
   document.head.appendChild(envCss);
 
   const fromUrl = qs.get("tenant");
-  const fromStore = localStorage.getItem('tenant') || '';
-  const TENANT = fromUrl || fromStore || '';
+  const fromStore = localStorage.getItem("tenant") || "";
+  const TENANT = fromUrl || fromStore || "";
   if (TENANT && !fromUrl) {
-    qs.set('tenant', TENANT);
-    history.replaceState(null, '', location.pathname + '?' + qs.toString());
+    qs.set("tenant", TENANT);
+    history.replaceState(null, "", location.pathname + "?" + qs.toString());
   }
-  if (TENANT) localStorage.setItem('tenant', TENANT);
+  if (TENANT) localStorage.setItem("tenant", TENANT);
 
   let tenantDefaultTheme = "auto";
+
   function effectiveTheme() {
     const user = localStorage.getItem(THEME_KEY);
     if (user === "light" || user === "dark") return user;
@@ -48,6 +49,33 @@
     btn.title = title;
   }
 
+  function applyEmbedCopy(data) {
+    if (!data || typeof data !== "object") return;
+    if (data.headerTitle) {
+      const ht = document.getElementById("header-title");
+      if (ht) ht.textContent = data.headerTitle;
+      document.title = data.headerTitle + " · Chat";
+    }
+    const wt = document.getElementById("welcome-title");
+    if (wt && data.welcomeTitle) wt.textContent = data.welcomeTitle;
+    const ws = document.getElementById("welcome-subtitle");
+    if (ws && data.welcomeSubtitle) ws.textContent = data.welcomeSubtitle;
+    const actions = document.getElementById("intro-actions");
+    if (!actions || !Array.isArray(data.starters)) return;
+    actions.innerHTML = "";
+    data.starters.forEach((s) => {
+      if (!s || typeof s !== "object") return;
+      const label = String(s.label || "").trim();
+      if (!label) return;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "intro-pill";
+      btn.setAttribute("data-prompt", s.prompt == null ? "" : String(s.prompt));
+      btn.textContent = label;
+      actions.appendChild(btn);
+    });
+  }
+
   (async function loadEmbedConfig() {
     try {
       const u = new URL("/api/public/embed-config", location.origin);
@@ -58,35 +86,52 @@
       if (data && (data.theme === "light" || data.theme === "dark" || data.theme === "auto")) {
         tenantDefaultTheme = data.theme;
       }
+      applyEmbedCopy(data);
     } catch (_) {}
     applyThemeToDom();
     refreshThemeToggle(document.getElementById("theme-toggle"));
   })();
 
   async function sendMessage(text) {
-    const u = new URL('/message', location.origin);
-    if (TENANT) u.searchParams.set('tenant', TENANT);
+    const u = new URL("/message", location.origin);
+    if (TENANT) u.searchParams.set("tenant", TENANT);
     const res = await fetch(u.toString(), {
-      method: 'POST',
-      credentials: 'include',
+      method: "POST",
+      credentials: "include",
       headers: {
-        'Content-Type': 'application/json',
-        ...(TENANT ? { 'X-Tenant': TENANT } : {})
+        "Content-Type": "application/json",
+        ...(TENANT ? { "X-Tenant": TENANT } : {}),
       },
-      body: JSON.stringify({ message: text })
+      body: JSON.stringify({ message: text }),
     });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
+    if (!res.ok) throw new Error("HTTP " + res.status);
     return res.json();
   }
 
   const $ = (id) => document.getElementById(id);
-  const box    = $('chat-box');
-  const scroll = $('canvas-scroll');
-  const form   = $('chat-form');
-  const input  = $('user-input');
-  const typing = $('typing');
-  const intro  = $('intro-card');
-  const themeBtn = $('theme-toggle');
+  const box = $("chat-box");
+  const scroll = $("canvas-scroll");
+  const form = $("chat-form");
+  const input = $("user-input");
+  const typing = $("typing");
+  const intro = $("intro-card");
+  const themeBtn = $("theme-toggle");
+
+  const introActions = $("intro-actions");
+  if (introActions && input) {
+    introActions.addEventListener("click", (e) => {
+      const btn = e.target && e.target.closest && e.target.closest("button.intro-pill");
+      if (!btn || !introActions.contains(btn)) return;
+      const p = btn.getAttribute("data-prompt") || "";
+      if (p) input.value = p;
+      input.focus();
+      if (typeof input.setSelectionRange === "function") {
+        const end = input.value.length;
+        input.setSelectionRange(end, end);
+      }
+    });
+  }
+
   if (themeBtn) {
     themeBtn.addEventListener("click", () => {
       const u = localStorage.getItem(THEME_KEY);
@@ -101,7 +146,7 @@
   function dismissIntro() {
     if (intro && !intro.hidden) {
       intro.hidden = true;
-      intro.setAttribute('aria-hidden', 'true');
+      intro.setAttribute("aria-hidden", "true");
     }
   }
 
@@ -113,45 +158,33 @@
   }
 
   function addBubble(text, who) {
-    if (who !== 'user') dismissIntro();
-    const div = document.createElement('div');
-    div.className = 'message ' + (who === 'user' ? 'user' : 'bot') + ' is-entering';
+    if (who !== "user") dismissIntro();
+    const div = document.createElement("div");
+    div.className = "message " + (who === "user" ? "user" : "bot") + " is-entering";
     div.textContent = text;
-    div.addEventListener('animationend', () => div.classList.remove('is-entering'), { once: true });
+    div.addEventListener("animationend", () => div.classList.remove("is-entering"), { once: true });
     box.appendChild(div);
     scrollCanvasToEnd();
   }
 
-  document.querySelectorAll('.intro-pill[data-prompt]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const p = btn.getAttribute('data-prompt') || '';
-      if (p) input.value = p;
-      input.focus();
-      if (typeof input.setSelectionRange === 'function') {
-        const end = input.value.length;
-        input.setSelectionRange(end, end);
-      }
-    });
-  });
-
-  form.addEventListener('submit', async (e) => {
+  form.addEventListener("submit", async (e) => {
     e.preventDefault();
-    const text = (input.value || '').trim();
+    const text = (input.value || "").trim();
     if (!text) return;
 
-    addBubble(text, 'user');
-    input.value = '';
-    typing.style.display = 'block';
+    addBubble(text, "user");
+    input.value = "";
+    typing.style.display = "block";
     scrollCanvasToEnd();
 
     try {
       const data = await sendMessage(text);
-      typing.style.display = 'none';
-      addBubble(data.reply || 'No reply received.', 'bot');
+      typing.style.display = "none";
+      addBubble(data.reply || "No reply received.", "bot");
     } catch (err) {
-      typing.style.display = 'none';
-      console.error('Send failed:', err);
-      addBubble('⚠️ Network error. Please try again.', 'bot');
+      typing.style.display = "none";
+      console.error("Send failed:", err);
+      addBubble("⚠️ Network error. Please try again.", "bot");
     }
   });
 })();

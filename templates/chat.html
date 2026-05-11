@@ -3,7 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Solomon</title>
+  <meta name="description" content="Chat with us — ask about products, your account, or how we can help." />
+  <title>Assistant</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
@@ -14,32 +15,28 @@
   <div class="container">
     <div class="canvas-root">
       <div class="header">
-        <span class="header-title">Solomon</span>
+        <span class="header-title" id="header-title">Assistant</span>
         <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Cycle theme: light, dark, or match system" title="Theme">◐</button>
       </div>
       <div class="canvas-scroll" id="canvas-scroll">
         <div class="canvas-column">
           <div class="intro-canvas" id="intro-card" role="region" aria-label="Welcome">
-            <h1>Hello, I'm Solomon.</h1>
-            <p>What would you like to explore?</p>
-            <div class="intro-actions">
-              <button type="button" class="intro-pill" data-prompt="">Ask a question</button>
-              <button type="button" class="intro-pill" data-prompt="Help me generate content about ">Generate content</button>
-              <button type="button" class="intro-pill" data-prompt="I'd like you to analyze ">Analyze something</button>
-            </div>
+            <h1 id="welcome-title">How can we help you today?</h1>
+            <p id="welcome-subtitle">Ask about products and services, orders and accounts, or anything else we can clarify.</p>
+            <div class="intro-actions" id="intro-actions" aria-label="Suggested starters"></div>
           </div>
           <div class="chat-box" id="chat-box"></div>
-          <div id="typing">Solomon is thinking…</div>
+          <div id="typing">Working on a reply…</div>
         </div>
       </div>
       <div class="input-dock">
         <form id="chat-form" class="input-row" autocomplete="off">
-          <input type="text" id="user-input" placeholder="Ask Solomon anything…" required aria-label="Your message"/>
+          <input type="text" id="user-input" placeholder="Ask anything…" required aria-label="Your message"/>
           <button type="submit" aria-label="Send message"><span class="send-icon" aria-hidden="true">➤</span></button>
         </form>
       </div>
     </div>
   </div>
-  <script src="/solomon.js?v=3" defer></script>
+  <script src="/solomon.js?v=4" defer></script>
 </body>
 </html>
