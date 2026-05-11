@@ -4,14 +4,14 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { buildPublicEmbedCopy } = require("../../utils/embedCopy");
 
-test("client profile uses Assistant when seeded default tenant name is generic", () => {
+test("client profile uses Solomon when seeded default tenant name is generic", () => {
   const out = buildPublicEmbedCopy({
     uiProfileEnv: "client",
     publicProductLabelEnv: "",
     tenant: { id: "default", name: "Default", settings: {} },
   });
   assert.equal(out.uiProfile, "client");
-  assert.equal(out.headerTitle, "Assistant");
+  assert.equal(out.headerTitle, "Solomon");
   assert.equal(out.starters.length, 0);
 });
 

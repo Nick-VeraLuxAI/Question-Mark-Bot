@@ -37,7 +37,7 @@ function resolveStarters(embed, baseStarters) {
 }
 
 const CLIENT_DEFAULTS = {
-  headerFallback: "Assistant",
+  headerFallback: "Solomon",
   welcomeTitle: "How can we help you today?",
   welcomeSubtitle: "Send a message below — we will respond here in the chat.",
   /** Visitor-facing default: no preset shortcut pills (tenant may add via settings.appearance.embed.starters). */
