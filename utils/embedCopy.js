@@ -25,23 +25,30 @@ function sanitizeStarters(raw, maxItems = 6) {
   return out.length ? out : null;
 }
 
+/** Tenant override: explicit `starters: []` means no shortcut pills; omit key → use profile defaults. */
+function resolveStarters(embed, baseStarters) {
+  if (!embed || typeof embed !== "object" || !Object.prototype.hasOwnProperty.call(embed, "starters")) {
+    return baseStarters;
+  }
+  const raw = embed.starters;
+  if (Array.isArray(raw) && raw.length === 0) return [];
+  const sanitized = sanitizeStarters(raw);
+  return sanitized !== null ? sanitized : baseStarters;
+}
+
 const CLIENT_DEFAULTS = {
   headerFallback: "Assistant",
   welcomeTitle: "How can we help you today?",
-  welcomeSubtitle:
-    "Ask about products and services, orders and accounts, or anything else we can clarify.",
-  starters: [
-    { label: "Products & pricing", prompt: "Tell me about your products and pricing for " },
-    { label: "Order or account help", prompt: "I need help with my order or account: " },
-    { label: "Something else", prompt: "" },
-  ],
+  welcomeSubtitle: "Send a message below — we will respond here in the chat.",
+  /** Visitor-facing default: no preset shortcut pills (tenant may add via settings.appearance.embed.starters). */
+  starters: [],
 };
 
 const INTERNAL_DEFAULTS = {
   headerFallback: "Solomon",
-  welcomeTitle: "Hello, I'm Solomon.",
+  welcomeTitle: "Solomon — operator preview",
   welcomeSubtitle:
-    "Operator preview — pass tenant as ?tenant=slug (see /admin). Deployments for live sites should use UI_PROFILE=client.",
+    "Test tenants with ?tenant=slug and manage them in the dashboard. Live customer sites should run with UI_PROFILE=client.",
   starters: [
     { label: "Ask a question", prompt: "" },
     { label: "Generate content", prompt: "Help me generate content about " },
@@ -89,7 +96,7 @@ function buildPublicEmbedCopy(opts) {
   const welcomeTitle = clipStr(embed.welcomeTitle, 200) || base.welcomeTitle;
   const welcomeSubtitle = clipStr(embed.welcomeSubtitle, 400) || base.welcomeSubtitle;
 
-  const starters = sanitizeStarters(embed.starters) || base.starters;
+  const starters = resolveStarters(embed, base.starters);
 
   return {
     uiProfile: profile,

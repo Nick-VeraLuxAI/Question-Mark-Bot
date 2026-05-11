@@ -599,7 +599,7 @@ test("GET /api/public/embed-config returns theme for tenant", async () => {
   assert.equal(res.body.theme, "auto");
   assert.equal(res.body.uiProfile, "client");
   assert.ok(typeof res.body.headerTitle === "string" && res.body.headerTitle.length > 0);
-  assert.ok(Array.isArray(res.body.starters) && res.body.starters.length >= 1);
+  assert.ok(Array.isArray(res.body.starters));
   cleanup();
 });
 
