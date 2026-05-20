@@ -10,6 +10,8 @@ const cookieParser = require('cookie-parser');
 const cors = require('cors');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
+const pkg = require("./package.json");
+
 const { encrypt, hasKey } = require('./utils/kms');
 const { materializeTenantSecrets } = require("./utils/tenantSecrets");
 const { platformSSOMiddleware } = require('./middleware/platformSSO');
@@ -235,6 +237,20 @@ const CORS_ORIGINS = new Set(
 );
 app.disable("x-powered-by"); // hide Express header
 app.set("trust proxy", 1);   // needed on Render/Railway/Heroku for correct IP/proto
+
+/** Liveness probe: no DB/Redis; safe for load balancers and tunnels (no secrets). */
+const SOLOMON_VERSION_LABEL = String(
+  process.env.DEPLOY_VERSION || process.env.SOURCE_COMMIT || pkg.version || "0"
+).slice(0, 120);
+app.get("/healthz", (_req, res) => {
+  res.set("Cache-Control", "no-store");
+  res.json({
+    ok: true,
+    service: "solomon",
+    time: new Date().toISOString(),
+    version: SOLOMON_VERSION_LABEL,
+  });
+});
 
 app.use(
   helmet({
@@ -3577,6 +3593,8 @@ if (process.env.ENABLE_HEARTBEAT === '1') {
 }
 
 
+const { startVeraluxOsReporting } = require("./services/veraluxOsReporter");
+
 // ----------------- Server startup -----------------
 const PORT = process.env.PORT || 8080;
 if (require.main === module) {
@@ -3587,6 +3605,11 @@ if (require.main === module) {
   logProductionBootWarnings();
   const server = app.listen(PORT, () => {
     console.log(`✅ Solomon backend running on port ${PORT}`);
+    try {
+      startVeraluxOsReporting(prisma);
+    } catch (e) {
+      console.warn("VeraLux OS reporting startup skipped:", e?.message || e);
+    }
   });
 
   async function shutdown(signal) {
