@@ -6,6 +6,9 @@ const nodemailer = require('nodemailer');
 const OpenAI = require('openai');
 const { google } = require('googleapis');
 const cookieParser = require('cookie-parser');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const crypto = require('crypto');
 
 const cors = require('cors');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
@@ -123,16 +126,95 @@ const {
 
 const { calculateCost } = require('./pricing');
 
-const app = express();
-app.disable("x-powered-by"); // hide Express header
-app.set("trust proxy", 1);   // needed on Render/Railway/Heroku for correct IP/proto
+const { content, actions, required } = require('./packages/shared/required-fields');
 
-app.use(cors());
-app.use(express.json()); // same behavior for JSON bodies
+// tiny retry helper for transient 429/5xx
+async function withRetry(fn, tries = 3) {
+  let err;
+  for (let i = 0; i < tries; i++) {
+    try { return await fn(); } catch (e) {
+      err = e;
+      await new Promise(r => setTimeout(r, 250 * (i + 1))); // backoff: 250ms, 500ms, 750ms
+    }
+  }
+  throw err;
+}
+
+
+const app = express();
+app.disable("x-powered-by");           // hide Express header
+app.set("trust proxy", 1);             // required behind Render/Heroku/Railway
+
+// --- Cookies FIRST (so CSRF + session can read/write) ---
+app.use(cookieParser());
+
+// --- SECURITY (helmet, CORS allowlist, rate limit, CSRF) ---
+app.use(helmet({
+  contentSecurityPolicy: false,        // turn on later if you remove inline scripts
+  crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" }
+}));
+
+// CORS allowlist (replaces any old app.use(cors()))
+const CORS_ALLOWED = (process.env.CORS_ALLOWED_ORIGINS || '')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
+
+app.use(cors({
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, true); // same-origin / curl
+    if (CORS_ALLOWED.length === 0 || CORS_ALLOWED.includes(origin)) return cb(null, true);
+    cb(new Error('Not allowed by CORS'));
+  },
+  credentials: true
+}));
+
+// Put limiter BEFORE body parsing to cheap-reject abusers
+const limiter = rateLimit({
+  windowMs: Number(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000,
+  max: Number(process.env.RATE_LIMIT_MAX) || 300,
+  standardHeaders: true,
+  legacyHeaders: false
+});
+app.use(limiter);
+
+// Ensure a lightweight session cookie exists (name: sid)
+app.use((req, res, next) => {
+  if (!req.cookies?.sid) {
+    const sid = crypto.randomUUID();
+    res.cookie('sid', sid, { httpOnly: true, sameSite: 'Lax', maxAge: 1000*60*60*24*30 });
+    req.cookies.sid = sid;
+  }
+  next();
+});
+
+// CSRF helpers based on 'sid'
+const CSRF_SECRET = process.env.CSRF_SECRET || crypto.randomUUID();
+const sign = (s) => crypto.createHmac('sha256', CSRF_SECRET).update(s).digest('hex');
+
+function requireCsrf(req, res, next) {
+  const token = req.headers['x-csrf'] || req.body?.csrf || req.query?.csrf;
+  const sid = req.cookies?.sid || '';
+  if (!token || token !== sign(sid)) return res.status(403).json({ error: 'CSRF' });
+  next();
+}
+
+// Issue token to clients (call this first on the client to get a token)
+app.get('/csrf-token', (req, res) => {
+  const sid = req.cookies?.sid || '';
+  res.json({ csrf: sign(sid) });
+});
+
+// Liveness probe
+app.get('/healthz', (req, res) => res.json({ ok: true, uptime: process.uptime() }));
+
+// --- now parse bodies & serve static (after security so Helmet headers apply) ---
+app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// --- Session persistence (tenant_id + session_id) ---
-app.use(cookieParser());
+// (optional) export the guard if you’ll reuse in subrouters
+// module.exports.requireCsrf = requireCsrf;
+
 
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
@@ -472,48 +554,64 @@ const mailOptions = {
 
     const openai = new OpenAI({ apiKey: tenant?.openaiKey || process.env.OPENAI_API_KEY });
 
-    const start = Date.now();
-    const aiResponse = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages
-    });
-    const latency = Date.now() - start;
-    await logMetric("latency", latency, tenantId);
-    await logSuccess(tenantId);
+  const start = Date.now();
 
-    // ✅ Normalize model & map tokens to camelCase for DB
-    const modelKey = (aiResponse.model || "gpt-4o-mini").toLowerCase();
-    const usage = aiResponse.usage || {};
-    const promptTokens     = usage.prompt_tokens     ?? 0;
-    const completionTokens = usage.completion_tokens ?? 0;
-    const cachedTokens     = usage.cached_tokens     ?? 0;
+  const aiResponse = await withRetry(() => openai.chat.completions.create({
+    model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+    messages,
+    temperature: 0.1,
+    response_format: { type: "json_object" }  // <- JSON mode
+  }));
 
-    // ✅ Price with your new pricing.js
-    const costs = calculateCost(modelKey, promptTokens, completionTokens, cachedTokens);
+  const latency = Date.now() - start;
+  await logMetric("latency", latency, tenantId);
+  await logSuccess(tenantId);
 
-    // ✅ Persist usage in the shape your Prisma schema expects
-    await logUsage({
-      model: modelKey,
-      promptTokens,
-      completionTokens,
-      cachedTokens,
-      cost: costs.total,
-      breakdown: costs
-    }, tenantId);
+  // usage + pricing (unchanged)
+  const modelKey = (aiResponse.model || "gpt-4o-mini").toLowerCase();
+  const usage = aiResponse.usage || {};
+  const promptTokens     = usage.prompt_tokens     ?? 0;
+  const completionTokens = usage.completion_tokens ?? 0;
+  const cachedTokens     = usage.cached_tokens     ?? 0;
+  const costs = calculateCost(modelKey, promptTokens, completionTokens, cachedTokens);
 
-    const reply =
-      aiResponse.choices?.[0]?.message?.content ||
-      "✅ Solomon received your message but didn’t return a clear reply. Please try rephrasing.";
+  await logUsage({
+    model: modelKey,
+    promptTokens,
+    completionTokens,
+    cachedTokens,
+    cost: costs.total,
+    breakdown: costs
+  }, tenantId);
 
-    await logEvent("ai", reply, tenantId);
-    await logConversation(sessionId, {
-      userMessage: message,
-      aiReply: reply,
-      tokens: { promptTokens, completionTokens, cachedTokens },
-      cost: costs.total
-    }, tenantId);
+  // parse + normalize the JSON
+  let parsed = {};
+  try {
+    parsed = JSON.parse(aiResponse.choices?.[0]?.message?.content || "{}");
+  } catch {}
 
-    res.json({ reply });
+  const cleaned     = content(parsed);      // { text, summary }
+  const nextActions = actions(parsed);      // [{type,key,hint}]
+  const missing     = required(parsed);     // ["email","photos",...]
+
+  // optional: log structured hints for admin/debug
+  try {
+    await logEvent("ai_meta", JSON.stringify({ missing, nextActions }), tenantId);
+  } catch {}
+
+  const reply = cleaned.text || "✅ Solomon received your message.";
+
+  await logEvent("ai", reply, tenantId);
+  await logConversation(sessionId, {
+    userMessage: message,
+    aiReply: reply,
+    tokens: { promptTokens, completionTokens, cachedTokens },
+    cost: costs.total
+  }, tenantId);
+
+  // keep response shape stable (reply only)
+  res.json({ reply });
+
 
   } catch (err) {
     console.error("❌ OpenAI Error:", err.message);

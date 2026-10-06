@@ -8,6 +8,13 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+/* ------------ NEW (Add once) ------------ */
+enum BotMode {
+  QUESTION_MARK
+  SOLOMON_INTAKE
+}
+/* --------------------------------------- */
+
 model Tenant {
   id        String   @id @default(cuid())
   name      String
@@ -51,6 +58,20 @@ model Tenant {
   branding Json? @default("{}")
   settings Json? @default("{}")
 
+  // Bot prompts (DB-first: system / policy / voice)
+  prompts Json @default("{}")
+
+  /* ---------- NEW (Additive, safe defaults) ---------- */
+  botModes      BotMode[] @default([QUESTION_MARK]) // enable QMB + Solomon Intake per-tenant
+  qmConfig      Json?
+  siConfig      Json?
+  featureFlags  Json?
+  driveFolderId String?
+  brandLogoUrl  String?
+  brandColorHex String?
+  usageCounters Json?
+  /* --------------------------------------------------- */
+
   // Relations
   convos     Conversation[]
   convLogs   ConversationLog[]
@@ -60,9 +81,6 @@ model Tenant {
   usage      Usage[]
   tags       TagDictionary[]
   adminUsers AdminUser[]
-
-  // Bot prompts (DB-first: system / policy / voice)
-  prompts Json @default("{}")
 }
 
 model Conversation {
