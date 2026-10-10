@@ -22,6 +22,7 @@
     "tenant:list": "node scripts/tenant-cli.js list",
     "tenant:verify": "node scripts/tenant-cli.js verify",
     "tenant:bootstrap-prompts": "node scripts/tenant-cli.js bootstrap-prompts",
+    "seed:veralux-internal": "node scripts/seed-veralux-internal-tenant.js",
     "audit:ci": "npm audit --audit-level=critical",
     "audit:report": "npm audit --audit-level=high || true"
   },

@@ -1,0 +1,26 @@
+# Cloudflare Tunnel (cloudflared) — copy to e.g. /etc/cloudflared/config.yml
+# Prefer systemd: cloudflared.service (ExecStart already uses this config). Do not
+# also run the same tunnel manually with sudo — duplicate connectors cause flaky 502s.
+# Manual run (debug only): cloudflared tunnel --config /etc/cloudflared/config.yml run
+#
+# Prerequisites:
+#   - `cloudflared tunnel create solomon-veratitan` (note tunnel UUID)
+#   - DNS CNAMEs: <hostname> -> <tunnel-id>.cfargotunnel.com (often auto via dashboard)
+#   - Solomon listening on 127.0.0.1:8080 (or match tunnel service port)
+#
+# Both admin and chat hostnames hit the same Express app; tenant resolution uses
+# the first DNS label (see server.js resolveTenantSlug). Labels "www", "admin",
+# "localhost" are special — "admin" maps to default tenant for public routes.
+
+tunnel: REPLACE_WITH_TUNNEL_UUID
+credentials-file: /etc/cloudflared/REPLACE_TUNNEL_JSON
+
+ingress:
+  - hostname: admin.veralux.ai
+    service: http://127.0.0.1:8080
+  - hostname: bot.veralux.ai
+    service: http://127.0.0.1:8080
+  # Optional per-tenant public origins (first label = tenant slug unless reserved):
+  # - hostname: "*.veralux.ai"
+  #   service: http://127.0.0.1:8080
+  - service: http_status:404

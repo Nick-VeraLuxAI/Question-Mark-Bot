@@ -1,0 +1,15 @@
+# -----------------------------------------------------------------------------
+# APPEND ONLY — merge into your existing /etc/cloudflared/config.yml
+# Insert these map entries ABOVE your final catch-all (e.g. http_status:404).
+# Replace hostnames and origin port (8083) to match /etc/solomon/solomon.env PORT.
+# Then: sudo cloudflared tunnel ingress validate
+#       sudo systemctl reload cloudflared   # only after successful validate
+# -----------------------------------------------------------------------------
+#  - hostname: solomon-admin.example.com
+#    service: http://127.0.0.1:8083
+#  - hostname: solomon-chat.example.com
+#    service: http://127.0.0.1:8083
+# -----------------------------------------------------------------------------
+# Protect solomon-admin.example.com with Cloudflare Access (or your SSO).
+# Do not remove or reorder unrelated hostnames already in your config file.
+# -----------------------------------------------------------------------------

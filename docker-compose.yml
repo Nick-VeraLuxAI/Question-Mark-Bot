@@ -5,6 +5,7 @@
 services:
   postgres:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_USER: solomon
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-solomon_local_change_me}
@@ -19,6 +20,7 @@ services:
 
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
       - solomon_redisdata:/data
@@ -43,6 +45,7 @@ services:
 
   api:
     build: .
+    restart: unless-stopped
     ports:
       - "${HOST_PORT:-8080}:8080"
     env_file:
@@ -84,6 +87,7 @@ services:
   # Second API process so client (/) and internal operator preview (/) can run at once; admin is /admin on either.
   api_internal:
     build: .
+    restart: unless-stopped
     ports:
       - "${HOST_PORT_INTERNAL:-8082}:8080"
     env_file:
@@ -122,6 +126,7 @@ services:
 
   worker:
     build: .
+    restart: unless-stopped
     env_file:
       - .env
     ports:

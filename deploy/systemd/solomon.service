@@ -1,0 +1,27 @@
+[Unit]
+Description=Solomon (Question-Mark-Bot) API
+After=network-online.target
+Wants=network-online.target
+# Ensure PostgreSQL and Redis are running before start (unit names vary by distro):
+# After=postgresql.service redis-server.service
+
+[Service]
+Type=simple
+User=solomon
+Group=solomon
+WorkingDirectory=/opt/solomon
+EnvironmentFile=-/etc/solomon/solomon.env
+ExecStart=/usr/bin/node server.js
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+
+# Hardening (adjust if you attach a debugger)
+PrivateTmp=true
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=solomon-api
+
+[Install]
+WantedBy=multi-user.target

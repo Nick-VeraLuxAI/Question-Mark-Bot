@@ -9,6 +9,12 @@ RELAXED="${HEALTHCHECK_RELAXED:-0}"
 
 fail() { echo "healthcheck: $*" >&2; exit 1; }
 
+code="$(curl -s -o /tmp/qmb-healthz.json -w "%{http_code}" "${BASE}/healthz")"
+[[ "$code" == "200" ]] || fail "/healthz expected 200, got $code"
+grep -q '"ok":true' /tmp/qmb-healthz.json || fail "/healthz body missing ok:true"
+grep -q '"service"[[:space:]]*:[[:space:]]*"solomon"' /tmp/qmb-healthz.json || fail "/healthz body missing service solomon"
+echo "OK  /healthz"
+
 code="$(curl -s -o /tmp/qmb-health.json -w "%{http_code}" "${BASE}/api/health")"
 [[ "$code" == "200" ]] || fail "/api/health expected 200, got $code"
 grep -q '"status"[[:space:]]*:[[:space:]]*"ok"' /tmp/qmb-health.json || fail "/api/health body missing status ok"

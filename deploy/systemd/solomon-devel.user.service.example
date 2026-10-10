@@ -1,0 +1,33 @@
+# User systemd unit — Solomon on your workstation (survives closing the IDE terminal).
+# For automatic start after reboot without logging in, prefer:
+#   ./scripts/install-solomon-autostart.sh
+# (system-wide solomon-local.service + enables cloudflared).
+#
+# 1) Copy and adjust WorkingDirectory if your clone is not under ~/Documents/GitHub/Question-Mark-Bot
+#    mkdir -p ~/.config/systemd/user
+#    cp deploy/systemd/solomon-devel.user.service.example ~/.config/systemd/user/solomon-devel.service
+#
+# 2) Ensure .env sets PORT to match cloudflared ingress (e.g. 8081 for solomon.veralux.ai).
+#
+# 3) Enable:
+#    systemctl --user daemon-reload
+#    systemctl --user enable --now solomon-devel.service
+#
+# 4) Optional — start at boot without an interactive login:
+#    loginctl enable-linger "$USER"
+#
+[Unit]
+Description=Solomon API (Question-Mark-Bot, user dev)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Documents/GitHub/Question-Mark-Bot
+EnvironmentFile=-%h/Documents/GitHub/Question-Mark-Bot/.env
+ExecStart=/usr/bin/node server.js
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

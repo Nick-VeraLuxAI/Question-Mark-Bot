@@ -1,0 +1,23 @@
+[Unit]
+Description=Solomon BullMQ worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=solomon
+Group=solomon
+WorkingDirectory=/opt/solomon
+EnvironmentFile=-/etc/solomon/solomon.env
+ExecStart=/usr/bin/node workers/queueWorker.js
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=solomon-worker
+
+[Install]
+WantedBy=multi-user.target
